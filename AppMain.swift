@@ -49,10 +49,10 @@ final class Book {
 @Model
 final class VocabCard {
     var word: String
-    var pronunciation: String
-    var definition: String
+    var pronunciation: String? // Optional to handle database schema upgrades safely
+    var definition: String?    // Optional to handle database schema upgrades safely
     var contextSentence: String
-    var translation: String // Vietnamese translation
+    var translation: String    // Vietnamese translation
     
     var easeFactor: Double = 2.5
     var interval: Int = 0
@@ -162,8 +162,8 @@ struct BookDetailView: View {
                             .fontWeight(.bold)
                             .foregroundColor(.accentColor)
                         
-                        if !card.pronunciation.isEmpty {
-                            Text(card.pronunciation)
+                        if let pronunciation = card.pronunciation, !pronunciation.isEmpty {
+                            Text(pronunciation)
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
                                 .padding(.horizontal, 6)
@@ -173,12 +173,12 @@ struct BookDetailView: View {
                         }
                     }
                     
-                    if !card.definition.isEmpty {
+                    if let definition = card.definition, !definition.isEmpty {
                         HStack(spacing: 8) {
                             Rectangle()
                                 .fill(Color.accentColor.opacity(0.4))
                                 .frame(width: 3)
-                            Text(card.definition)
+                            Text(definition)
                                 .font(.subheadline)
                                 .foregroundColor(.primary)
                         }
@@ -350,7 +350,9 @@ struct CameraCaptureView: View {
     @ObservedObject var camera: CameraModel
     @State private var showWordSelection = false
     @State private var selectedWordsToSave: [DetectedWord] = []
+    @State private var finalItemsToSave: [PendingVocabItem] = []
     @State private var showSaveSheet = false
+    @State private var translationTrigger: TranslationSession.Configuration? = nil
     
     var body: some View {
         ZStack {
@@ -407,15 +409,40 @@ struct CameraCaptureView: View {
                         showWordSelection = false
                         camera.capturedImage = nil
                         
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                            showSaveSheet = true
-                        }
+                        // Begin translation trigger at top-level context (prevents UIKit sheet crash)
+                        translationTrigger = TranslationSession.Configuration(
+                            source: Locale.Language(identifier: "en-US"),
+                            target: Locale.Language(identifier: "vi-VN")
+                        )
                     }
                 )
             }
         }
+        .translationTask(translationTrigger) { session in
+            Task {
+                var pending: [PendingVocabItem] = selectedWordsToSave.map {
+                    PendingVocabItem(word: $0.text, originalSentence: $0.contextSentence)
+                }
+                
+                for i in pending.indices {
+                    do {
+                        let source = pending[i].originalSentence
+                        let response = try await session.translate(source)
+                        pending[i].translatedSentence = response.targetText
+                    } catch {
+                        print("Translation error: \(error.localizedDescription)")
+                    }
+                }
+                
+                await MainActor.run {
+                    self.finalItemsToSave = pending
+                    self.translationTrigger = nil
+                    self.showSaveSheet = true
+                }
+            }
+        }
         .sheet(isPresented: $showSaveSheet) {
-            SaveToCollectionView(detectedWords: selectedWordsToSave)
+            SaveToCollectionView(itemsToSave: finalItemsToSave)
         }
     }
 }
@@ -502,14 +529,11 @@ struct SaveToCollectionView: View {
     
     @Query(sort: \Book.title) private var books: [Book]
     
-    let detectedWords: [DetectedWord]
+    @State var itemsToSave: [PendingVocabItem]
     
     @State private var selectedBook: Book? = nil
     @State private var newBookTitle = ""
     @State private var isCreatingNewBook = false
-    
-    @State private var itemsToSave: [PendingVocabItem] = []
-    @State private var translationTrigger: TranslationSession.Configuration? = nil
     
     var body: some View {
         NavigationStack {
@@ -543,7 +567,7 @@ struct SaveToCollectionView: View {
                 }
                 
                 Button(action: saveCards) {
-                    Text("Save \(detectedWords.count) Word(s)")
+                    Text("Save \(itemsToSave.count) Word(s)")
                         .frame(maxWidth: .infinity)
                         .font(.headline)
                 }
@@ -558,21 +582,9 @@ struct SaveToCollectionView: View {
                     Button("Cancel") { dismiss() }
                 }
             }
-            .onAppear(perform: setupInitialItems)
-            .translationTask(translationTrigger) { session in
+            .onAppear {
                 Task {
-                    for i in itemsToSave.indices {
-                        do {
-                            let source = itemsToSave[i].originalSentence
-                            let response = try await session.translate(source)
-                            
-                            await MainActor.run {
-                                itemsToSave[i].translatedSentence = response.targetText
-                            }
-                        } catch {
-                            print("Translation error: \(error.localizedDescription)")
-                        }
-                    }
+                    await lookupDefinitionsAndPronunciations()
                 }
             }
         }
@@ -583,22 +595,6 @@ struct SaveToCollectionView: View {
             return newBookTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         } else {
             return selectedBook == nil
-        }
-    }
-    
-    private func setupInitialItems() {
-        guard itemsToSave.isEmpty else { return }
-        itemsToSave = detectedWords.map {
-            PendingVocabItem(word: $0.text, originalSentence: $0.contextSentence)
-        }
-        
-        translationTrigger = TranslationSession.Configuration(
-            source: Locale.Language(identifier: "en-US"),
-            target: Locale.Language(identifier: "vi-VN")
-        )
-        
-        Task {
-            await lookupDefinitionsAndPronunciations()
         }
     }
     
@@ -649,7 +645,8 @@ struct SaveToCollectionView: View {
         let bookToUse: Book
         
         if isCreatingNewBook {
-            let newBook = Book(title: newBookTitle.trimmingCharacters(in: .whitespacesAndNewlines))
+            let trimmedTitle = newBookTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            let newBook = Book(title: trimmedTitle)
             modelContext.insert(newBook)
             bookToUse = newBook
         } else if let selectedBook = selectedBook {
@@ -668,8 +665,10 @@ struct SaveToCollectionView: View {
             )
             modelContext.insert(card)
             card.book = bookToUse
+            bookToUse.cards.append(card)
         }
         
+        try? modelContext.save()
         dismiss()
     }
 }
