@@ -387,10 +387,191 @@ struct ExportDocument: FileDocument {
 }
 
 struct SettingsView: View {
+    // Persisted settings
+    @AppStorage("maxDailyReviews") private var maxDailyReviews = 20        // 0 = unlimited
+    @AppStorage("notificationHour") private var notificationHour = 9       // 24‑hour format
+    @AppStorage("notificationMinute") private var notificationMinute = 0
+    @AppStorage("notificationsEnabled") private var notificationsEnabled = false
+    @AppStorage("learningStyle") private var learningStyle = LearningStyle.definitionFirst.rawValue
+
+    @State private var showTimePicker = false
+
     var body: some View {
         NavigationStack {
-            Text("Settings").navigationTitle("Settings")
+            Form {
+                // MARK: - Reviews
+                Section {
+                    Stepper("Max reviews per day: \(maxDailyReviews == 0 ? "Unlimited" : "\(maxDailyReviews)")",
+                            value: $maxDailyReviews, in: 0...100, step: 5)
+                    if maxDailyReviews > 0 {
+                        Text("You will see up to \(maxDailyReviews) due cards each day.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("All due cards will be shown.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                } header: {
+                    Label("Daily Reviews", systemImage: "repeat.circle")
+                }
+
+                // MARK: - Notifications
+                Section {
+                    Toggle("Enable Daily Reminder", isOn: $notificationsEnabled)
+                        .onChange(of: notificationsEnabled) { _, newValue in
+                            if newValue {
+                                requestNotificationPermissionIfNeeded()
+                            } else {
+                                cancelAllNotifications()
+                            }
+                        }
+
+                    if notificationsEnabled {
+                        Button {
+                            showTimePicker = true
+                        } label: {
+                            HStack {
+                                Text("Reminder Time")
+                                Spacer()
+                                Text(formattedTime)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        if showTimePicker {
+                            DatePicker(
+                                "Select time",
+                                selection: Binding(
+                                    get: { Date.from(hour: notificationHour, minute: notificationMinute) },
+                                    set: { newDate in
+                                        let components = Calendar.current.dateComponents([.hour, .minute], from: newDate)
+                                        notificationHour = components.hour ?? 9
+                                        notificationMinute = components.minute ?? 0
+                                        scheduleNotification()
+                                    }
+                                ),
+                                displayedComponents: .hourAndMinute
+                            )
+                            .datePickerStyle(.wheel)
+                            .labelsHidden()
+                        }
+                    }
+                } header: {
+                    Label("Notifications", systemImage: "bell")
+                } footer: {
+                    if notificationsEnabled {
+                        Text("You'll receive a daily reminder to review your vocabulary.")
+                    }
+                }
+
+                // MARK: - Learning Style
+                Section {
+                    Picker("Flashcard Style", selection: $learningStyle) {
+                        ForEach(LearningStyle.allCases) { style in
+                            Text(style.displayName).tag(style.rawValue)
+                        }
+                    }
+                    .pickerStyle(.menu)
+
+                    if let currentStyle = LearningStyle(rawValue: learningStyle) {
+                        Text(currentStyle.description)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                } header: {
+                    Label("Learning Style", systemImage: "brain.head.profile")
+                }
+            }
+            .navigationTitle("Settings")
         }
+        .onAppear {
+            // Schedule notification if already enabled (e.g., after app restart)
+            if notificationsEnabled {
+                requestNotificationPermissionIfNeeded()
+                scheduleNotification()
+            }
+        }
+    }
+
+    // MARK: - Helpers
+
+    private var formattedTime: String {
+        let hour = notificationHour % 12 == 0 ? 12 : notificationHour % 12
+        let ampm = notificationHour < 12 ? "AM" : "PM"
+        return String(format: "%d:%02d %@", hour, notificationMinute, ampm)
+    }
+
+    private func requestNotificationPermissionIfNeeded() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+            if !granted {
+                DispatchQueue.main.async {
+                    notificationsEnabled = false
+                }
+            }
+        }
+    }
+
+    private func scheduleNotification() {
+        guard notificationsEnabled else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = "Time to review!"
+        content.body = "You have vocabulary cards due today. Keep your streak going!"
+        content.sound = .default
+
+        var dateComponents = DateComponents()
+        dateComponents.hour = notificationHour
+        dateComponents.minute = notificationMinute
+
+        let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
+        let request = UNNotificationRequest(identifier: "dailyReviewReminder", content: content, trigger: trigger)
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                print("Notification scheduling error: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func cancelAllNotifications() {
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["dailyReviewReminder"])
+    }
+}
+
+// MARK: - Learning style enum
+enum LearningStyle: String, CaseIterable, Identifiable {
+    case definitionFirst
+    case wordFirst
+    case cloze
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .definitionFirst: return "Definition First"
+        case .wordFirst: return "Word First"
+        case .cloze: return "Cloze (Sentence blanked)"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .definitionFirst: return "You see the definition → hint (sentence) → answer (word + translation)."
+        case .wordFirst: return "You see the word → recall meaning → tap for translation/sentence."
+        case .cloze: return "Sentence with the word blanked → guess the word → reveal."
+        }
+    }
+}
+
+// Helper to create Date from hour/minute
+extension Date {
+    static func from(hour: Int, minute: Int) -> Date {
+        let calendar = Calendar.current
+        var components = calendar.dateComponents([.year, .month, .day], from: Date())
+        components.hour = hour
+        components.minute = minute
+        return calendar.date(from: components) ?? Date()
     }
 }
 

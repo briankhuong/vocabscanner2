@@ -15,8 +15,15 @@ struct ReviewSessionView: View {
         case answer       // show word + translation, then rate
     }
 
+    @AppStorage("maxDailyReviews") private var maxDailyReviews = 20
+
     private var dueCards: [VocabCard] {
-        allCards.filter { $0.nextReviewDate <= Date() }
+        let allDue = allCards.filter { $0.nextReviewDate <= Date() }
+        if maxDailyReviews > 0 {
+            return Array(allDue.prefix(maxDailyReviews))
+        } else {
+            return allDue
+        }
     }
 
     var body: some View {
