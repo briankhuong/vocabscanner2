@@ -49,10 +49,10 @@ final class Book {
 @Model
 final class VocabCard {
     var word: String
-    var pronunciation: String? // Optional to handle database schema upgrades safely
-    var definition: String?    // Optional to handle database schema upgrades safely
+    var pronunciation: String?
+    var definition: String?
     var contextSentence: String
-    var translation: String    // Vietnamese translation
+    var translation: String
     
     var easeFactor: Double = 2.5
     var interval: Int = 0
@@ -125,7 +125,7 @@ struct BookshelfView: View {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(book.title)
                                             .font(.headline)
-                                        Text("\(book.cards.count) word(s)")
+                                        Text(String(book.cards.count) + " word(s)")
                                             .font(.subheadline)
                                             .foregroundColor(.secondary)
                                     }
@@ -162,7 +162,7 @@ struct BookDetailView: View {
                             .fontWeight(.bold)
                             .foregroundColor(.accentColor)
                         
-                        if let pronunciation = card.pronunciation, !pronunciation.isEmpty {
+                        if let pronunciation = card.pronunciation, !pronunciation.isEmpty, pronunciation != "N/A" {
                             Text(pronunciation)
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
@@ -173,7 +173,7 @@ struct BookDetailView: View {
                         }
                     }
                     
-                    if let definition = card.definition, !definition.isEmpty {
+                    if let definition = card.definition, !definition.isEmpty, definition != "Definition not found." {
                         HStack(spacing: 8) {
                             Rectangle()
                                 .fill(Color.accentColor.opacity(0.4))
@@ -195,7 +195,7 @@ struct BookDetailView: View {
                             .font(.footnote)
                             .italic()
                         
-                        if !card.translation.isEmpty {
+                        if !card.translation.isEmpty && card.translation != "Translation unavailable" {
                             Text(card.translation)
                                 .font(.footnote)
                                 .foregroundColor(.green)
@@ -237,20 +237,31 @@ final class CameraModel: NSObject, ObservableObject {
     let session = AVCaptureSession()
     private let output = AVCapturePhotoOutput()
     private let sessionQueue = DispatchQueue(label: "camera.session")
-    private var isSettingUp = false
+    private var isConfigured = false
     
-    func setupCamera() {
+    func startCamera() {
         let status = AVCaptureDevice.authorizationStatus(for: .video)
         switch status {
         case .authorized:
             permissionDenied = false
-            configureSession()
+            sessionQueue.async { [weak self] in
+                guard let self = self else { return }
+                if !self.isConfigured {
+                    self.configureSession()
+                }
+                if !self.session.isRunning {
+                    self.session.startRunning()
+                }
+                DispatchQueue.main.async {
+                    self.isSessionReady = self.session.isRunning
+                }
+            }
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { granted in
                 DispatchQueue.main.async {
                     if granted {
                         self.permissionDenied = false
-                        self.configureSession()
+                        self.startCamera()
                     } else {
                         self.permissionDenied = true
                     }
@@ -264,56 +275,31 @@ final class CameraModel: NSObject, ObservableObject {
     }
     
     private func configureSession() {
-        guard !isSettingUp else { return }
-        isSettingUp = true
-        sessionQueue.async { [weak self] in
-            guard let self = self else { return }
-            self.session.beginConfiguration()
-            self.session.inputs.forEach { self.session.removeInput($0) }
-            self.session.outputs.forEach { self.session.removeOutput($0) }
-            self.session.sessionPreset = .photo
-            
-            guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
-                  let input = try? AVCaptureDeviceInput(device: device),
-                  self.session.canAddInput(input) else {
-                self.session.commitConfiguration()
-                DispatchQueue.main.async { self.isSessionReady = false; self.isSettingUp = false }
-                return
-            }
-            
-            self.session.addInput(input)
-            if self.session.canAddOutput(self.output) {
-                self.session.addOutput(self.output)
-            }
-            
-            self.session.commitConfiguration()
-            self.session.startRunning()
-            
-            DispatchQueue.main.async {
-                self.isSessionReady = self.session.isRunning
-                self.isSettingUp = false
-            }
-            
-            NotificationCenter.default.removeObserver(self)
-            NotificationCenter.default.addObserver(self,
-                                                   selector: #selector(self.sessionWasInterrupted),
-                                                   name: AVCaptureSession.wasInterruptedNotification,
-                                                   object: self.session)
-            NotificationCenter.default.addObserver(self,
-                                                   selector: #selector(self.sessionInterruptionEnded),
-                                                   name: AVCaptureSession.interruptionEndedNotification,
-                                                   object: self.session)
+        session.beginConfiguration()
+        session.sessionPreset = .photo
+        
+        if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+           let input = try? AVCaptureDeviceInput(device: device),
+           session.canAddInput(input) {
+            session.addInput(input)
         }
+        
+        if session.canAddOutput(output) {
+            session.addOutput(output)
+        }
+        
+        session.commitConfiguration()
+        isConfigured = true
     }
     
-    @objc private func sessionWasInterrupted() {
-        DispatchQueue.main.async { self.isSessionReady = false }
-    }
-    
-    @objc private func sessionInterruptionEnded() {
+    func stopCamera() {
         sessionQueue.async { [weak self] in
-            self?.session.startRunning()
-            DispatchQueue.main.async { self?.isSessionReady = self?.session.isRunning ?? false }
+            if self?.session.isRunning == true {
+                self?.session.stopRunning()
+            }
+            DispatchQueue.main.async {
+                self?.isSessionReady = false
+            }
         }
     }
     
@@ -321,22 +307,11 @@ final class CameraModel: NSObject, ObservableObject {
         let settings = AVCapturePhotoSettings()
         output.capturePhoto(with: settings, delegate: self)
     }
-    
-    func stopSession() {
-        sessionQueue.async { [weak self] in
-            self?.session.stopRunning()
-            DispatchQueue.main.async { self?.isSessionReady = false }
-        }
-        NotificationCenter.default.removeObserver(self)
-    }
 }
 
 extension CameraModel: AVCapturePhotoCaptureDelegate {
-    func photoOutput(_ output: AVCapturePhotoOutput,
-                     didFinishProcessingPhoto photo: AVCapturePhoto,
-                     error: Error?) {
-        guard let imageData = photo.fileDataRepresentation(),
-              let image = UIImage(data: imageData) else { return }
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        guard let imageData = photo.fileDataRepresentation(), let image = UIImage(data: imageData) else { return }
         DispatchQueue.main.async {
             self.capturedImage = image
         }
@@ -349,10 +324,11 @@ extension CameraModel: AVCapturePhotoCaptureDelegate {
 struct CameraCaptureView: View {
     @ObservedObject var camera: CameraModel
     @State private var showWordSelection = false
-    @State private var selectedWordsToSave: [DetectedWord] = []
+    @State private var selectedWordsToTranslate: [DetectedWord] = []
     @State private var finalItemsToSave: [PendingVocabItem] = []
     @State private var showSaveSheet = false
-    @State private var translationTrigger: TranslationSession.Configuration? = nil
+    @State private var isProcessing = false
+    @State private var translationTask: Task<Void, Never>? = nil
     
     var body: some View {
         ZStack {
@@ -361,7 +337,7 @@ struct CameraCaptureView: View {
                     .ignoresSafeArea()
             }
             
-            if camera.capturedImage == nil {
+            if !isProcessing && camera.capturedImage == nil {
                 VStack {
                     Spacer()
                     Button(action: { camera.capturePhoto() }) {
@@ -379,18 +355,25 @@ struct CameraCaptureView: View {
                     Image(systemName: "camera.fill").font(.system(size: 50)).foregroundColor(.secondary)
                     Text("Camera Access Required").font(.title2).fontWeight(.semibold)
                     Text("Please enable camera access in Settings.").multilineTextAlignment(.center).foregroundColor(.secondary)
-                    Button("Open Settings") {
-                        if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
-                    }
-                    .buttonStyle(.borderedProminent)
                 }
                 .padding()
             } else if !camera.isSessionReady && !camera.permissionDenied {
-                ProgressView("Starting camera…")
+                ProgressView("Starting camera...")
+            }
+            
+            if isProcessing {
+                VStack {
+                    ProgressView("Analyzing & Translating...")
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .padding()
+                        .background(Color.black.opacity(0.6))
+                        .cornerRadius(12)
+                        .foregroundColor(.white)
+                }
             }
         }
-        .onAppear { if camera.capturedImage == nil { camera.setupCamera() } }
-        .onDisappear { camera.stopSession() }
+        .onAppear { camera.startCamera() }
+        .onDisappear { camera.stopCamera() }
         .onChange(of: camera.capturedImage) { _, newImage in
             if newImage != nil {
                 showWordSelection = true
@@ -403,50 +386,67 @@ struct CameraCaptureView: View {
                     onDismiss: {
                         showWordSelection = false
                         camera.capturedImage = nil
+                        camera.startCamera()
                     },
                     onProcess: { selectedWords in
-                        selectedWordsToSave = selectedWords
+                        selectedWordsToTranslate = selectedWords
                         showWordSelection = false
                         camera.capturedImage = nil
+                        isProcessing = true
                         
-                        // Begin translation trigger at top-level context (prevents UIKit sheet crash)
-                        translationTrigger = TranslationSession.Configuration(
-                            source: Locale.Language(identifier: "en-US"),
-                            target: Locale.Language(identifier: "vi-VN")
-                        )
+                        translationTask?.cancel()
+                        translationTask = Task {
+                            try? await Task.sleep(nanoseconds: 600_000_000) // 0.6 s
+                            
+                            if Task.isCancelled { return }
+                            
+                            let session = TranslationSession(
+                                installedSource: Locale.Language(identifier: "en-US"),
+                                target: Locale.Language(identifier: "vi-VN")
+                            )
+                            
+                            var pending = await MainActor.run {
+                                selectedWordsToTranslate.map {
+                                    PendingVocabItem(word: $0.text, originalSentence: $0.contextSentence)
+                                }
+                            }
+                            
+                            for i in pending.indices {
+                                if Task.isCancelled { break }
+                                do {
+                                    let response = try await session.translate(pending[i].originalSentence)
+                                    pending[i].translatedSentence = response.targetText
+                                } catch {
+                                    pending[i].translatedSentence = "Translation unavailable"
+                                    print("Translation error: \(error.localizedDescription)")
+                                }
+                            }
+                            
+                            await MainActor.run {
+                                self.finalItemsToSave = pending
+                                self.isProcessing = false
+                                self.showSaveSheet = true
+                            }
+                        }
                     }
                 )
             }
         }
-        .translationTask(translationTrigger) { session in
-            Task {
-                var pending: [PendingVocabItem] = selectedWordsToSave.map {
-                    PendingVocabItem(word: $0.text, originalSentence: $0.contextSentence)
-                }
-                
-                for i in pending.indices {
-                    do {
-                        let source = pending[i].originalSentence
-                        let response = try await session.translate(source)
-                        pending[i].translatedSentence = response.targetText
-                    } catch {
-                        print("Translation error: \(error.localizedDescription)")
-                    }
-                }
-                
-                await MainActor.run {
-                    self.finalItemsToSave = pending
-                    self.translationTrigger = nil
-                    self.showSaveSheet = true
-                }
-            }
-        }
-        .sheet(isPresented: $showSaveSheet) {
-            SaveToCollectionView(itemsToSave: finalItemsToSave)
+        .sheet(isPresented: $showSaveSheet, onDismiss: {
+            self.selectedWordsToTranslate = []
+            self.finalItemsToSave = []
+            self.translationTask?.cancel()
+            self.translationTask = nil
+            camera.startCamera()
+        }) {
+            SaveToCollectionView(itemsToSave: $finalItemsToSave)
         }
     }
 }
 
+// --------------------------------------------------
+// MARK: - Camera Preview Components
+// --------------------------------------------------
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
     func makeUIView(context: Context) -> PreviewView {
@@ -494,12 +494,8 @@ struct WordSelectionView: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: WordSelectionViewController, context: Context) {}
 }
 
-// --------------------------------------------------
-// MARK: - WordBoxView (Interactive Box)
-// --------------------------------------------------
 class WordBoxView: UIView {
     let detectedWord: DetectedWord
-    
     var isSelectedWord: Bool = false {
         didSet {
             backgroundColor = isSelectedWord ? UIColor.yellow.withAlphaComponent(0.4) : UIColor.clear
@@ -515,13 +511,11 @@ class WordBoxView: UIView {
         self.isSelectedWord = false
     }
     
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
 // --------------------------------------------------
-// MARK: - SaveToCollectionView (Translation & Save UI)
+// MARK: - SaveToCollectionView
 // --------------------------------------------------
 struct SaveToCollectionView: View {
     @Environment(\.modelContext) private var modelContext
@@ -529,7 +523,7 @@ struct SaveToCollectionView: View {
     
     @Query(sort: \Book.title) private var books: [Book]
     
-    @State var itemsToSave: [PendingVocabItem]
+    @Binding var itemsToSave: [PendingVocabItem]
     
     @State private var selectedBook: Book? = nil
     @State private var newBookTitle = ""
@@ -559,15 +553,15 @@ struct SaveToCollectionView: View {
                             ProgressView("Analyzing text...")
                                 .frame(maxWidth: .infinity, alignment: .center)
                         } else {
-                            ForEach($itemsToSave) { $item in
-                                VocabItemRowView(item: $item)
+                            ForEach(0..<itemsToSave.count, id: \.self) { index in
+                                VocabItemRowView(item: $itemsToSave[index])
                             }
                         }
                     }
                 }
                 
                 Button(action: saveCards) {
-                    Text("Save \(itemsToSave.count) Word(s)")
+                    Text("Save " + String(itemsToSave.count) + " Word(s)")
                         .frame(maxWidth: .infinity)
                         .font(.headline)
                 }
@@ -601,18 +595,26 @@ struct SaveToCollectionView: View {
     private func lookupDefinitionsAndPronunciations() async {
         for i in itemsToSave.indices {
             let word = itemsToSave[i].word.lowercased().trimmingCharacters(in: .punctuationCharacters)
-            guard let url = URL(string: "https://api.dictionaryapi.dev/api/v2/entries/en/\(word)") else { continue }
+            guard let encodedWord = word.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+                  let url = URL(string: "https://api.dictionaryapi.dev/api/v2/entries/en/" + encodedWord) else {
+                await setFallbackDefinition(for: i)
+                continue
+            }
             
             do {
-                let (data, _) = try await URLSession.shared.data(from: url)
+                let (data, response) = try await URLSession.shared.data(from: url)
+                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
+                    await setFallbackDefinition(for: i)
+                    continue
+                }
+                
                 if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
                    let firstEntry = json.first {
                     
                     let phoneticText = firstEntry["phonetic"] as? String ?? ""
                     var extractedPhonetic = phoneticText
                     
-                    if extractedPhonetic.isEmpty,
-                       let phoneticsList = firstEntry["phonetics"] as? [[String: Any]] {
+                    if extractedPhonetic.isEmpty, let phoneticsList = firstEntry["phonetics"] as? [[String: Any]] {
                         for ph in phoneticsList {
                             if let text = ph["text"] as? String, !text.isEmpty {
                                 extractedPhonetic = text
@@ -631,19 +633,27 @@ struct SaveToCollectionView: View {
                     }
                     
                     await MainActor.run {
-                        itemsToSave[i].pronunciation = extractedPhonetic
-                        itemsToSave[i].definition = extractedDefinition
+                        itemsToSave[i].pronunciation = extractedPhonetic.isEmpty ? "N/A" : extractedPhonetic
+                        itemsToSave[i].definition = extractedDefinition.isEmpty ? "Definition not found." : extractedDefinition
                     }
+                } else {
+                    await setFallbackDefinition(for: i)
                 }
             } catch {
-                print("Failed lookup for \(word): \(error.localizedDescription)")
+                await setFallbackDefinition(for: i)
             }
+        }
+    }
+    
+    private func setFallbackDefinition(for index: Int) async {
+        await MainActor.run {
+            itemsToSave[index].definition = "Definition not found."
+            itemsToSave[index].pronunciation = "N/A"
         }
     }
     
     private func saveCards() {
         let bookToUse: Book
-        
         if isCreatingNewBook {
             let trimmedTitle = newBookTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             let newBook = Book(title: trimmedTitle)
@@ -651,9 +661,7 @@ struct SaveToCollectionView: View {
             bookToUse = newBook
         } else if let selectedBook = selectedBook {
             bookToUse = selectedBook
-        } else {
-            return
-        }
+        } else { return }
         
         for item in itemsToSave {
             let card = VocabCard(
@@ -675,60 +683,39 @@ struct SaveToCollectionView: View {
 
 struct VocabItemRowView: View {
     @Binding var item: PendingVocabItem
-    
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text(item.word)
-                    .font(.headline)
-                    .foregroundColor(.accentColor)
-                
-                if !item.pronunciation.isEmpty {
+                Text(item.word).font(.headline).foregroundColor(.accentColor)
+                if !item.pronunciation.isEmpty && item.pronunciation != "N/A" {
                     Text(item.pronunciation)
                         .font(.caption)
                         .foregroundColor(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.1))
-                        .cornerRadius(4)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.1)).cornerRadius(4)
                 }
-                
                 Spacer()
-                
                 if item.translatedSentence.isEmpty {
                     ProgressView()
-                } else {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
+                } else if item.translatedSentence != "Translation unavailable" {
+                    Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
                 }
             }
-            
             if !item.definition.isEmpty {
                 HStack(spacing: 8) {
-                    Rectangle()
-                        .fill(Color.accentColor.opacity(0.3))
-                        .frame(width: 2)
-                    Text(item.definition)
-                        .font(.footnote)
-                        .foregroundColor(.primary)
+                    Rectangle().fill(Color.accentColor.opacity(0.3)).frame(width: 2)
+                    Text(item.definition).font(.footnote).foregroundColor(.primary)
                 }
                 .padding(.leading, 4)
             } else {
-                Text("Searching dictionary definition...")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                Text("Searching dictionary definition...").font(.caption).foregroundColor(.secondary)
             }
-            
             VStack(alignment: .leading, spacing: 4) {
-                Text(item.originalSentence)
-                    .font(.caption)
-                    .italic()
-                    .foregroundColor(.secondary)
-                
-                if !item.translatedSentence.isEmpty {
-                    Text(item.translatedSentence)
-                        .font(.caption)
-                        .foregroundColor(.green)
+                Text(item.originalSentence).font(.caption).italic().foregroundColor(.secondary)
+                if !item.translatedSentence.isEmpty && item.translatedSentence != "Translation unavailable" {
+                    Text(item.translatedSentence).font(.caption).foregroundColor(.green)
+                } else if item.translatedSentence == "Translation unavailable" {
+                    Text(item.translatedSentence).font(.caption).foregroundColor(.red)
                 }
             }
         }
@@ -759,13 +746,11 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
     private var bottomBar: UIView!
     private var wordScrollView: UIScrollView!
     private var wordStackView: UIStackView!
-    
     private var selectedWords: [DetectedWord] = []
     
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
-        
         setupScrollView()
         setupImageView()
         setupBottomBar()
@@ -774,7 +759,6 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
     
     private func updateSelectedLabel() {
         wordStackView.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        
         if selectedWords.isEmpty {
             let emptyLabel = UILabel()
             emptyLabel.text = "0 words selected"
@@ -793,7 +777,6 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
                 label.textColor = .systemBlue
                 label.font = UIFont.systemFont(ofSize: 13, weight: .bold)
                 label.translatesAutoresizingMaskIntoConstraints = false
-                
                 tagView.addSubview(label)
                 
                 NSLayoutConstraint.activate([
@@ -802,10 +785,8 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
                     label.topAnchor.constraint(equalTo: tagView.topAnchor, constant: 4),
                     label.bottomAnchor.constraint(equalTo: tagView.bottomAnchor, constant: -4)
                 ])
-                
                 wordStackView.addArrangedSubview(tagView)
             }
-            
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                 guard let self = self else { return }
                 let rightOffset = CGPoint(x: max(0, self.wordScrollView.contentSize.width - self.wordScrollView.bounds.width), y: 0)
@@ -917,13 +898,11 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
     
     private func drawWordBoxes(_ words: [DetectedWord]) {
         overlayView.subviews.forEach { $0.removeFromSuperview() }
-        
         let displayedRect = AVMakeRect(aspectRatio: image.size, insideRect: imageView.bounds)
         overlayView.frame = displayedRect
         
         for word in words {
             let box = word.boundingBox
-            
             let x = box.origin.x * displayedRect.width
             let y = (1 - box.origin.y - box.height) * displayedRect.height
             let width = box.width * displayedRect.width
@@ -934,45 +913,33 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
             
             let tap = UITapGestureRecognizer(target: self, action: #selector(wordTapped(_:)))
             boxView.addGestureRecognizer(tap)
-            
             overlayView.addSubview(boxView)
         }
     }
     
     @objc private func wordTapped(_ gesture: UITapGestureRecognizer) {
         guard let boxView = gesture.view as? WordBoxView else { return }
-        
         boxView.isSelectedWord.toggle()
-        
         if boxView.isSelectedWord {
             selectedWords.append(boxView.detectedWord)
         } else {
             selectedWords.removeAll { $0.id == boxView.detectedWord.id }
         }
-        
         updateSelectedLabel()
     }
     
     @objc private func clearSelection() {
         selectedWords.removeAll()
         updateSelectedLabel()
-        
         for case let boxView as WordBoxView in overlayView.subviews {
             boxView.isSelectedWord = false
         }
     }
     
-    @objc private func processWords() {
-        onProcess?(selectedWords)
-    }
+    @objc private func processWords() { onProcess?(selectedWords) }
+    @objc private func cancelTapped() { onDismiss?() }
     
-    @objc private func cancelTapped() {
-        onDismiss?()
-    }
-    
-    func viewForZooming(in scrollView: UIScrollView) -> UIView? {
-        return imageView
-    }
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? { return imageView }
     
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
         let offsetX = max((scrollView.bounds.width - scrollView.contentSize.width) * 0.5, 0)
@@ -982,12 +949,10 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
     
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        
         if scrollView.zoomScale == 1.0 {
             scrollView.frame = view.bounds
             imageView.frame = scrollView.bounds
             scrollView.contentSize = imageView.bounds.size
-            
             let displayedRect = AVMakeRect(aspectRatio: image.size, insideRect: imageView.bounds)
             overlayView.frame = displayedRect
         }
@@ -1020,7 +985,6 @@ final class WordDetector {
             }
             
             let fullText = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-            
             let tokenizer = NLTokenizer(unit: .sentence)
             tokenizer.string = fullText
             var sentences: [String] = []
