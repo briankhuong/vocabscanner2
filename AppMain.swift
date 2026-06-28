@@ -76,19 +76,32 @@ final class VocabCard {
 // --------------------------------------------------
 struct ContentView: View {
     @StateObject private var cameraModel = CameraModel()
+    @Query(sort: \VocabCard.nextReviewDate) private var allCards: [VocabCard]
+    
+    var dueCount: Int {
+        allCards.filter { $0.nextReviewDate <= Date() }.count
+    }
+    
     var body: some View {
         TabView {
             BookshelfView()
                 .tabItem { Label("Bookshelf", systemImage: "books.vertical.fill") }
+            
             CameraCaptureView(camera: cameraModel)
                 .tabItem { Label("Scan", systemImage: "camera.fill") }
+            
+            ReviewSessionView()
+                .tabItem {
+                    Label("Review", systemImage: "repeat.circle.fill")
+                }
+                .badge(dueCount)   // always works
+            
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape.fill") }
         }
         .tint(.accentColor)
     }
 }
-
 // --------------------------------------------------
 // MARK: - Bookshelf Tab Views
 // --------------------------------------------------
