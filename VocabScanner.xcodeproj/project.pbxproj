@@ -15,6 +15,8 @@
 		FA293F432FF17321000160F2 /* ActivityLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA293F422FF17321000160F2 /* ActivityLog.swift */; };
 		FA293F452FF1736B000160F2 /* ActivityLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA293F442FF1736B000160F2 /* ActivityLogger.swift */; };
 		FA293F472FF17424000160F2 /* ActivityGridView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA293F462FF17424000160F2 /* ActivityGridView.swift */; };
+		FA293F492FF180D4000160F2 /* VocabCardTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA293F482FF180D4000160F2 /* VocabCardTransfer.swift */; };
+		FA293F4B2FF181FA000160F2 /* MergeBooksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA293F4A2FF181FA000160F2 /* MergeBooksView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -27,6 +29,8 @@
 		FA293F422FF17321000160F2 /* ActivityLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityLog.swift; sourceTree = "<group>"; };
 		FA293F442FF1736B000160F2 /* ActivityLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityLogger.swift; sourceTree = "<group>"; };
 		FA293F462FF17424000160F2 /* ActivityGridView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityGridView.swift; sourceTree = "<group>"; };
+		FA293F482FF180D4000160F2 /* VocabCardTransfer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VocabCardTransfer.swift; sourceTree = "<group>"; };
+		FA293F4A2FF181FA000160F2 /* MergeBooksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MergeBooksView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -49,6 +53,8 @@
 				FA293F422FF17321000160F2 /* ActivityLog.swift */,
 				FA293F402FF16BAA000160F2 /* ReviewSessionView.swift */,
 				FA293F372FF10244000160F2 /* AppMain.swift */,
+				FA293F4A2FF181FA000160F2 /* MergeBooksView.swift */,
+				FA293F482FF180D4000160F2 /* VocabCardTransfer.swift */,
 				FA293F462FF17424000160F2 /* ActivityGridView.swift */,
 				FA293F442FF1736B000160F2 /* ActivityLogger.swift */,
 				FA293F392FF1027D000160F2 /* Frameworks */,
@@ -145,8 +151,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FA293F4B2FF181FA000160F2 /* MergeBooksView.swift in Sources */,
 				FA293F412FF16BAA000160F2 /* ReviewSessionView.swift in Sources */,
 				FA293F3F2FF16B9B000160F2 /* SM2Scheduler.swift in Sources */,
+				FA293F492FF180D4000160F2 /* VocabCardTransfer.swift in Sources */,
 				FA293F382FF10244000160F2 /* AppMain.swift in Sources */,
 				FA293F432FF17321000160F2 /* ActivityLog.swift in Sources */,
 				FA293F452FF1736B000160F2 /* ActivityLogger.swift in Sources */,

@@ -61,6 +61,8 @@ final class VocabCard {
     
     var book: Book?
     
+    var sortOrder: Int = 0
+    
     init(word: String, contextSentence: String, translation: String = "", pronunciation: String = "", definition: String = "") {
         self.word = word
         self.contextSentence = contextSentence
@@ -108,6 +110,8 @@ struct ContentView: View {
 struct BookshelfView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Book.title) private var books: [Book]
+    @State private var showMergeSheet = false
+    @State private var showImporter = false
     
     var body: some View {
         NavigationStack {
@@ -156,6 +160,30 @@ struct BookshelfView: View {
                 }
             }
             .navigationTitle("Bookshelf")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        showImporter = true
+                    } label: {
+                        Label("Import", systemImage: "square.and.arrow.down")
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showMergeSheet = true
+                    } label: {
+                        Label("Merge Books", systemImage: "arrow.triangle.merge")
+                    }
+                }
+            }
+            .sheet(isPresented: $showMergeSheet) {
+                MergeBooksView()
+            }
+            .fileImporter(
+                isPresented: $showImporter,
+                allowedContentTypes: [.json],
+                onCompletion: handleImport
+            )
         }
     }
     
@@ -164,22 +192,67 @@ struct BookshelfView: View {
             modelContext.delete(books[index])
         }
     }
+    
+    private func handleImport(_ result: Result<URL, Error>) {
+        switch result {
+        case .success(let url):
+            do {
+                let data = try Data(contentsOf: url)
+                let bookExport = try JSONDecoder().decode(BookExport.self, from: data)
+                // Create a new book with imported cards
+                let newBook = Book(title: bookExport.title, author: bookExport.author)
+                modelContext.insert(newBook)
+                for (index, cardExport) in bookExport.cards.enumerated() {
+                    let card = cardExport.toVocabCard()
+                    card.sortOrder = index
+                    modelContext.insert(card)
+                    newBook.cards.append(card)
+                    card.book = newBook
+                }
+                try? modelContext.save()
+            } catch {
+                print("Import failed: \(error)")
+            }
+        case .failure(let error):
+            print("File picker error: \(error)")
+        }
+    }
 }
 
 struct BookDetailView: View {
     @Environment(\.modelContext) private var modelContext
-    let book: Book
-    
+    @Bindable var book: Book          // Changed to @Bindable for editing
+    @State private var isEditingTitle = false
+    @State private var newTitle = ""
+    @State private var searchText = ""
+
+    // Export state
+    @State private var isExporting = false
+    @State private var exportData: Data?
+
+    // Filtered cards based on search
+    var filteredCards: [VocabCard] {
+        if searchText.isEmpty {
+            return book.cards.sorted { $0.sortOrder < $1.sortOrder }
+        } else {
+            return book.cards.filter {
+                $0.word.localizedCaseInsensitiveContains(searchText) ||
+                ($0.definition?.localizedCaseInsensitiveContains(searchText) ?? false) ||
+                $0.contextSentence.localizedCaseInsensitiveContains(searchText)
+            }.sorted { $0.sortOrder < $1.sortOrder }
+        }
+    }
+
     var body: some View {
         List {
-            ForEach(book.cards) { card in
+            ForEach(filteredCards) { card in
+                // ... (same card row content as before, unchanged)
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(alignment: .firstTextBaseline) {
                         Text(card.word)
                             .font(.title3)
                             .fontWeight(.bold)
                             .foregroundColor(.accentColor)
-                        
                         if let pronunciation = card.pronunciation, !pronunciation.isEmpty, pronunciation != "N/A" {
                             Text(pronunciation)
                                 .font(.subheadline)
@@ -190,7 +263,6 @@ struct BookDetailView: View {
                                 .cornerRadius(4)
                         }
                     }
-                    
                     if let definition = card.definition, !definition.isEmpty, definition != "Definition not found." {
                         HStack(spacing: 8) {
                             Rectangle()
@@ -202,17 +274,14 @@ struct BookDetailView: View {
                         }
                         .padding(.leading, 4)
                     }
-                    
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Context Sentence:")
                             .font(.caption)
                             .fontWeight(.semibold)
                             .foregroundColor(.secondary)
-                        
                         Text(card.contextSentence)
                             .font(.footnote)
                             .italic()
-                        
                         if !card.translation.isEmpty && card.translation != "Translation unavailable" {
                             Text(card.translation)
                                 .font(.footnote)
@@ -224,15 +293,96 @@ struct BookDetailView: View {
                 .padding(.vertical, 6)
             }
             .onDelete(perform: deleteCards)
+            .onMove(perform: moveCards)          // ← drag to reorder
         }
         .navigationTitle(book.title)
+        .searchable(text: $searchText, prompt: "Search words, definitions, sentences")
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    Button {
+                        newTitle = book.title
+                        isEditingTitle = true
+                    } label: {
+                        Label("Edit Title", systemImage: "pencil")
+                    }
+                    Button {
+                        exportBook()
+                    } label: {
+                        Label("Export as JSON", systemImage: "square.and.arrow.up")
+                    }
+                    EditButton()     // built‑in button to enable moving rows
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+            }
+        }
+        .alert("Edit Book Title", isPresented: $isEditingTitle) {
+            TextField("Title", text: $newTitle)
+            Button("Cancel", role: .cancel) { }
+            Button("Save") {
+                if !newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    book.title = newTitle
+                    try? modelContext.save()
+                }
+            }
+        }
+        .fileExporter(
+            isPresented: $isExporting,
+            document: ExportDocument(data: exportData ?? Data()),
+            contentType: .json,
+            defaultFilename: "\(book.title.replacingOccurrences(of: " ", with: "_")).json"
+        ) { result in
+            // Handle export result if needed
+        }
     }
-    
+
     private func deleteCards(at offsets: IndexSet) {
         for index in offsets {
-            let card = book.cards[index]
+            let card = filteredCards[index]
             modelContext.delete(card)
         }
+        try? modelContext.save()
+    }
+
+    private func moveCards(from source: IndexSet, to destination: Int) {
+        var cards = book.cards.sorted { $0.sortOrder < $1.sortOrder }
+        cards.move(fromOffsets: source, toOffset: destination)
+        // Reassign sortOrder to reflect new order
+        for (index, card) in cards.enumerated() {
+            card.sortOrder = index
+        }
+        try? modelContext.save()
+    }
+
+    private func exportBook() {
+        let exportCards = book.cards.map { VocabCardExport(from: $0) }
+        let bookExport = BookExport(title: book.title, author: book.author, cards: exportCards)
+        do {
+            let data = try JSONEncoder().encode(bookExport)
+            exportData = data
+            isExporting = true
+        } catch {
+            print("Export failed: \(error)")
+        }
+    }
+}
+
+// Helper for fileExporter
+struct ExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    var data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        self.data = Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        return FileWrapper(regularFileWithContents: data)
     }
 }
 
