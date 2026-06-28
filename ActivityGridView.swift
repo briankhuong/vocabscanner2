@@ -7,6 +7,7 @@ struct ActivityGridView: View {
     private let spacing: CGFloat = 2
     private let blockLengthMonths = 6
     private let monthLabelHeight: CGFloat = 10
+    private let dayLabelWidth: CGFloat = 10
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -15,66 +16,54 @@ struct ActivityGridView: View {
                 .foregroundColor(.secondary)
 
             GeometryReader { geometry in
-                let totalWidth = geometry.size.width - 10
-                let weeksCount = weeks.count
-                let columnWidth = (totalWidth - (CGFloat(weeksCount) * spacing)) / CGFloat(weeksCount)
-                let squareSize = min(max(columnWidth, 10), 14)
+                let totalWidth = geometry.size.width
+                let columnCount = weeks.count
+                let squareSize = max(8, min(14, (totalWidth - dayLabelWidth - CGFloat(columnCount) * spacing) / CGFloat(columnCount)))
 
-                HStack(alignment: .top, spacing: spacing) {
-                    // Day label column
-                    VStack(spacing: spacing) {
-                        // Spacer to match the month-label row height
-                        Rectangle()
-                            .fill(Color.clear)
-                            .frame(width: 10, height: monthLabelHeight)
-                        ForEach(0..<7, id: \.self) { rowIndex in
-                            Text(dayLabelForRow(rowIndex))
+                VStack(spacing: spacing) {
+                    // Row 0: Month labels
+                    HStack(spacing: spacing) {
+                        Color.clear.frame(width: dayLabelWidth, height: monthLabelHeight)
+                        ForEach(0..<columnCount, id: \.self) { index in
+                            Text(monthLabelForWeek(at: index))
                                 .font(.system(size: 7))
-                                .frame(width: 10, height: squareSize)
                                 .foregroundColor(.secondary)
+                                .frame(width: squareSize, height: monthLabelHeight, alignment: .leading)
+                                .minimumScaleFactor(0.6)
                         }
                     }
 
-                    ScrollView(.horizontal, showsIndicators: false) {
+                    // Rows 1‑7: Day labels + squares
+                    ForEach(0..<7, id: \.self) { rowIndex in
                         HStack(spacing: spacing) {
-                            ForEach(Array(weeks.enumerated()), id: \.offset) { index, week in
-                                VStack(spacing: spacing) {
-                                    // Month label (or empty placeholder of same height)
-                                    Text(monthLabelForWeek(at: index))
-                                        .font(.system(size: 7))
-                                        .foregroundColor(.secondary)
-                                        .frame(width: squareSize, height: monthLabelHeight, alignment: .leading)
-                                        .minimumScaleFactor(0.6)
+                            Text(dayLabelForRow(rowIndex))
+                                .font(.system(size: 7))
+                                .foregroundColor(.secondary)
+                                .frame(width: dayLabelWidth, height: squareSize)
 
-                                    // 7 day squares
-                                    ForEach(0..<7, id: \.self) { rowIndex in
-                                        if rowIndex < week.count {
-                                            let cell = week[rowIndex]
-                                            Rectangle()
-                                                .fill(color(for: cell.count))
-                                                .frame(width: squareSize, height: squareSize)
-                                                .cornerRadius(1.5)
-                                        } else {
-                                            Rectangle()
-                                                .fill(Color.clear)
-                                                .frame(width: squareSize, height: squareSize)
-                                        }
-                                    }
+                            ForEach(0..<columnCount, id: \.self) { colIndex in
+                                let week = weeks[colIndex]
+                                if rowIndex < week.count {
+                                    let cell = week[rowIndex]
+                                    Rectangle()
+                                        .fill(color(for: cell.count))
+                                        .frame(width: squareSize, height: squareSize)
+                                        .cornerRadius(1.5)
+                                } else {
+                                    Color.clear.frame(width: squareSize, height: squareSize)
                                 }
-                                .frame(width: squareSize)
                             }
                         }
                     }
                 }
-                .frame(height: monthLabelHeight + 7 * squareSize + 6 * spacing) // exact height
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(height: monthLabelHeight + 7 * 14 + 6 * spacing + 4) // fallback height with reasonable square size
+            .frame(height: monthLabelHeight + 7 * 14 + 6 * spacing + 4)
         }
     }
 
     // MARK: - Helpers
 
-    /// Returns the 3‑letter month abbreviation if `index` is the first week of a month, else empty string.
     private func monthLabelForWeek(at index: Int) -> String {
         let calendar = Calendar.current
         let formatter = DateFormatter()
@@ -82,11 +71,8 @@ struct ActivityGridView: View {
 
         guard index >= 0, index < weeks.count else { return "" }
         let week = weeks[index]
-
-        // Get the first real (non‑padding) date in this week
         guard let realDay = week.first(where: { $0.date > Date.distantPast })?.date else { return "" }
 
-        // Show month if first week of grid, or if month changed from previous week
         if index == 0 { return formatter.string(from: realDay) }
 
         let previousWeek = weeks[index - 1]
@@ -146,9 +132,18 @@ struct ActivityGridView: View {
             allCells.insert(GridCell(date: Date.distantPast, count: 0), at: 0)
         }
 
-        return stride(from: 0, to: allCells.count, by: 7).map {
+        var weeksArray = stride(from: 0, to: allCells.count, by: 7).map {
             Array(allCells[$0..<min($0+7, allCells.count)])
         }
+        // Pad last week to exactly 7 cells (no missing rows)
+        if let lastWeek = weeksArray.last, lastWeek.count < 7 {
+            var padded = lastWeek
+            for _ in padded.count..<7 {
+                padded.append(GridCell(date: Date.distantPast, count: 0))
+            }
+            weeksArray[weeksArray.count - 1] = padded
+        }
+        return weeksArray
     }
 
     private func dayLabelForRow(_ row: Int) -> String {
