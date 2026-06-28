@@ -12,6 +12,9 @@
 		FA293F3D2FF10285000160F2 /* Vision.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FA293F3C2FF10285000160F2 /* Vision.framework */; };
 		FA293F3F2FF16B9B000160F2 /* SM2Scheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA293F3E2FF16B9B000160F2 /* SM2Scheduler.swift */; };
 		FA293F412FF16BAA000160F2 /* ReviewSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA293F402FF16BAA000160F2 /* ReviewSessionView.swift */; };
+		FA293F432FF17321000160F2 /* ActivityLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA293F422FF17321000160F2 /* ActivityLog.swift */; };
+		FA293F452FF1736B000160F2 /* ActivityLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA293F442FF1736B000160F2 /* ActivityLogger.swift */; };
+		FA293F472FF17424000160F2 /* ActivityGridView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA293F462FF17424000160F2 /* ActivityGridView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -21,6 +24,9 @@
 		FA293F3C2FF10285000160F2 /* Vision.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Vision.framework; path = System/Library/Frameworks/Vision.framework; sourceTree = SDKROOT; };
 		FA293F3E2FF16B9B000160F2 /* SM2Scheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SM2Scheduler.swift; sourceTree = "<group>"; };
 		FA293F402FF16BAA000160F2 /* ReviewSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewSessionView.swift; sourceTree = "<group>"; };
+		FA293F422FF17321000160F2 /* ActivityLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityLog.swift; sourceTree = "<group>"; };
+		FA293F442FF1736B000160F2 /* ActivityLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityLogger.swift; sourceTree = "<group>"; };
+		FA293F462FF17424000160F2 /* ActivityGridView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityGridView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -40,8 +46,11 @@
 			isa = PBXGroup;
 			children = (
 				FA293F3E2FF16B9B000160F2 /* SM2Scheduler.swift */,
+				FA293F422FF17321000160F2 /* ActivityLog.swift */,
 				FA293F402FF16BAA000160F2 /* ReviewSessionView.swift */,
 				FA293F372FF10244000160F2 /* AppMain.swift */,
+				FA293F462FF17424000160F2 /* ActivityGridView.swift */,
+				FA293F442FF1736B000160F2 /* ActivityLogger.swift */,
 				FA293F392FF1027D000160F2 /* Frameworks */,
 				FA293F0F2FF0E469000160F2 /* Products */,
 			);
@@ -139,6 +148,9 @@
 				FA293F412FF16BAA000160F2 /* ReviewSessionView.swift in Sources */,
 				FA293F3F2FF16B9B000160F2 /* SM2Scheduler.swift in Sources */,
 				FA293F382FF10244000160F2 /* AppMain.swift in Sources */,
+				FA293F432FF17321000160F2 /* ActivityLog.swift in Sources */,
+				FA293F452FF1736B000160F2 /* ActivityLogger.swift in Sources */,
+				FA293F472FF17424000160F2 /* ActivityGridView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

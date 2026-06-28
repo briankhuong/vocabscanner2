@@ -23,7 +23,7 @@ struct VocabScannerApp: App {
         WindowGroup {
             ContentView()
         }
-        .modelContainer(for: [Book.self, VocabCard.self])
+        .modelContainer(for: [Book.self, VocabCard.self, ActivityLog.self])
     }
 }
 
@@ -111,7 +111,13 @@ struct BookshelfView: View {
     
     var body: some View {
         NavigationStack {
-            Group {
+            List {
+                // Activity tracker at the top
+                Section {
+                    ActivityGridView()
+                        .padding(.vertical, 8)
+                }
+
                 if books.isEmpty {
                     VStack(spacing: 20) {
                         Image(systemName: "books.vertical")
@@ -126,28 +132,27 @@ struct BookshelfView: View {
                             .multilineTextAlignment(.center)
                             .padding(.horizontal)
                     }
+                    .listRowBackground(Color.clear)
                 } else {
-                    List {
-                        ForEach(books) { book in
-                            NavigationLink(destination: BookDetailView(book: book)) {
-                                HStack {
-                                    Image(systemName: "book.closed.fill")
-                                        .foregroundColor(.accentColor)
-                                        .font(.title2)
-                                    
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(book.title)
-                                            .font(.headline)
-                                        Text(String(book.cards.count) + " word(s)")
-                                            .font(.subheadline)
-                                            .foregroundColor(.secondary)
-                                    }
+                    ForEach(books) { book in
+                        NavigationLink(destination: BookDetailView(book: book)) {
+                            HStack {
+                                Image(systemName: "book.closed.fill")
+                                    .foregroundColor(.accentColor)
+                                    .font(.title2)
+                                
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(book.title)
+                                        .font(.headline)
+                                    Text(String(book.cards.count) + " word(s)")
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
                                 }
-                                .padding(.vertical, 4)
                             }
+                            .padding(.vertical, 4)
                         }
-                        .onDelete(perform: deleteBooks)
                     }
+                    .onDelete(perform: deleteBooks)
                 }
             }
             .navigationTitle("Bookshelf")
@@ -690,6 +695,10 @@ struct SaveToCollectionView: View {
         }
         
         try? modelContext.save()
+        // Log activity for each word saved
+        for _ in itemsToSave {
+            ActivityLogger.logWordAdded(context: modelContext)
+        }
         dismiss()
     }
 }

@@ -150,6 +150,8 @@ struct ReviewSessionView: View {
         SM2Scheduler.update(card: card, rating: rating)
         reviewedCount += 1
 
+        ActivityLogger.logReviewCompleted(context: modelContext)   // ← added
+
         withAnimation {
             step = .definition
             if currentCardIndex + 1 < dueCards.count {
