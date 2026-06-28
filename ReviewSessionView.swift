@@ -10,6 +10,7 @@ struct ReviewSessionView: View {
     @State private var step: Step = .definition
     @State private var sessionCompleted = false
     @State private var reviewedCount = 0
+    @State private var isCramMode = false
 
     enum Step {
         case definition   // show definition, tap for hint
@@ -18,6 +19,10 @@ struct ReviewSessionView: View {
     }
 
     private var dueCards: [VocabCard] {
+        if isCramMode {
+            // Show all cards, ignore due date and cap
+            return allCards
+        }
         let allDue = allCards.filter { $0.nextReviewDate <= Date() }
         if maxDailyReviews > 0 {
             return Array(allDue.prefix(maxDailyReviews))
@@ -27,40 +32,43 @@ struct ReviewSessionView: View {
     }
 
     var body: some View {
-        Group {
-            if dueCards.isEmpty {
-                ContentUnavailableView(
-                    "All caught up! 🎉",
-                    systemImage: "checkmark.rectangle.stack",
-                    description: Text("No cards to review right now.")
-                )
-            } else if sessionCompleted {
-                VStack(spacing: 20) {
-                    Image(systemName: "party.popper.fill")
-                        .font(.system(size: 60))
-                        .foregroundColor(.accentColor)
-                    Text("Session Complete")
-                        .font(.title)
-                        .fontWeight(.bold)
-                    Text("You reviewed \(reviewedCount) card(s).")
-                        .foregroundColor(.secondary)
-                }
-            } else if currentCardIndex < dueCards.count {
-                let card = dueCards[currentCardIndex]
-                let currentStyle = LearningStyle(rawValue: learningStyle) ?? .definitionFirst
+        VStack(spacing: 0) {
+            // Always-visible Cram toggle
+            Toggle("Cram Mode", systemImage: isCramMode ? "infinity" : "calendar", isOn: $isCramMode)
+                .padding()
 
-                VStack(spacing: 24) {
-                    // Progress bar
-                    ProgressView(value: Double(currentCardIndex), total: Double(dueCards.count))
-                        .padding(.horizontal)
+            Group {
+                if dueCards.isEmpty {
+                    ContentUnavailableView(
+                        "All caught up! 🎉",
+                        systemImage: "checkmark.rectangle.stack",
+                        description: Text("No cards to review right now.")
+                    )
+                } else if sessionCompleted {
+                    VStack(spacing: 20) {
+                        Image(systemName: "party.popper.fill")
+                            .font(.system(size: 60))
+                            .foregroundColor(.accentColor)
+                        Text("Session Complete")
+                            .font(.title)
+                            .fontWeight(.bold)
+                        Text("You reviewed \(reviewedCount) card(s).")
+                            .foregroundColor(.secondary)
+                    }
+                } else if currentCardIndex < dueCards.count {
+                    let card = dueCards[currentCardIndex]
+                    let currentStyle = LearningStyle(rawValue: learningStyle) ?? .definitionFirst
 
-                    Spacer()
+                    VStack(spacing: 24) {
+                        // Progress bar
+                        ProgressView(value: Double(currentCardIndex), total: Double(dueCards.count))
+                            .padding(.horizontal)
 
-                    // Card content based on learning style
-                    // Card content based on learning style
-                    switch currentStyle {
-                    case .definitionFirst:
-                        Group {
+                        Spacer()
+
+                        // Card content based on learning style
+                        switch currentStyle {
+                        case .definitionFirst:
                             switch step {
                             case .definition:
                                 VStack(spacing: 16) {
@@ -95,166 +103,169 @@ struct ReviewSessionView: View {
                             case .answer:
                                 answerView(for: card)
                             }
-                        }
-                        .id(card.id)
-                        .transition(.opacity)
 
-                    case .wordFirst:
-                        Group {
-                            switch step {
-                            case .definition:
-                                VStack(spacing: 16) {
-                                    Text(card.word)
-                                        .font(.largeTitle)
-                                        .fontWeight(.bold)
+                        case .wordFirst:
+                            Group {
+                                switch step {
+                                case .definition:
+                                    VStack(spacing: 16) {
+                                        Text(card.word)
+                                            .font(.largeTitle)
+                                            .fontWeight(.bold)
 
-                                    Button("Show Definition") {
-                                        withAnimation { step = .hint }
+                                        Button("Show Definition") {
+                                            withAnimation { step = .hint }
+                                        }
+                                        .buttonStyle(.borderedProminent)
                                     }
-                                    .buttonStyle(.borderedProminent)
-                                }
 
-                            case .hint:
-                                VStack(spacing: 16) {
-                                    Text(card.word)
-                                        .font(.largeTitle)
-                                        .fontWeight(.bold)
+                                case .hint:
+                                    VStack(spacing: 16) {
+                                        Text(card.word)
+                                            .font(.largeTitle)
+                                            .fontWeight(.bold)
 
-                                    if let def = card.definition, !def.isEmpty, def != "Definition not found." {
-                                        VStack(spacing: 8) {
-                                            Text("Definition")
-                                                .font(.caption)
+                                        if let def = card.definition, !def.isEmpty, def != "Definition not found." {
+                                            VStack(spacing: 8) {
+                                                Text("Definition")
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                                Text(def)
+                                                    .font(.title3)
+                                                    .multilineTextAlignment(.center)
+                                            }
+                                        } else {
+                                            Text("Definition not available.")
+                                                .font(.callout)
                                                 .foregroundColor(.secondary)
-                                            Text(def)
-                                                .font(.title3)
-                                                .multilineTextAlignment(.center)
                                         }
-                                    } else {
-                                        Text("Definition not available.")
-                                            .font(.callout)
-                                            .foregroundColor(.secondary)
+
+                                        Button("Show Example & Translation") {
+                                            withAnimation { step = .answer }
+                                        }
+                                        .buttonStyle(.borderedProminent)
                                     }
 
-                                    Button("Show Example & Translation") {
-                                        withAnimation { step = .answer }
+                                case .answer:
+                                    VStack(spacing: 16) {
+                                        Text(card.word)
+                                            .font(.largeTitle)
+                                            .fontWeight(.bold)
+
+                                        VStack(spacing: 8) {
+                                            if !card.translation.isEmpty && card.translation != "Translation unavailable" {
+                                                Text(card.translation)
+                                                    .font(.title3)
+                                                    .foregroundColor(.green)
+                                            }
+                                            Text(card.contextSentence)
+                                                .font(.callout)
+                                                .italic()
+                                                .foregroundColor(.secondary)
+                                        }
                                     }
-                                    .buttonStyle(.borderedProminent)
                                 }
+                            }
+                            .id(card.id)
+                            .transition(.opacity)
 
-                            case .answer:
-                                VStack(spacing: 16) {
-                                    Text(card.word)
-                                        .font(.largeTitle)
-                                        .fontWeight(.bold)
+                        case .cloze:
+                            Group {
+                                switch step {
+                                case .definition:
+                                    VStack(spacing: 16) {
+                                        Text(blankSentence(card.contextSentence, word: card.word))
+                                            .font(.title2)
+                                            .multilineTextAlignment(.center)
+                                            .padding(.horizontal)
 
-                                    VStack(spacing: 8) {
-                                        if !card.translation.isEmpty && card.translation != "Translation unavailable" {
-                                            Text(card.translation)
-                                                .font(.title3)
-                                                .foregroundColor(.green)
+                                        Button("Show Hint") {
+                                            withAnimation { step = .hint }
                                         }
+                                        .buttonStyle(.borderedProminent)
+                                    }
+
+                                case .hint:
+                                    VStack(spacing: 16) {
+                                        Text(blankSentence(card.contextSentence, word: card.word))
+                                            .font(.title2)
+                                            .multilineTextAlignment(.center)
+                                            .padding(.horizontal)
+
+                                        if let def = card.definition, !def.isEmpty, def != "Definition not found." {
+                                            VStack(spacing: 8) {
+                                                Text("Definition")
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                                Text(def)
+                                                    .font(.title3)
+                                                    .multilineTextAlignment(.center)
+                                            }
+                                        } else {
+                                            Text("Definition not available.")
+                                                .font(.callout)
+                                                .foregroundColor(.secondary)
+                                        }
+
+                                        Button("Show Answer") {
+                                            withAnimation { step = .answer }
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                    }
+
+                                case .answer:
+                                    VStack(spacing: 16) {
+                                        VStack(spacing: 6) {
+                                            Text(card.word)
+                                                .font(.largeTitle)
+                                                .fontWeight(.bold)
+                                                .foregroundColor(.accentColor)
+                                            if !card.translation.isEmpty && card.translation != "Translation unavailable" {
+                                                Text(card.translation)
+                                                    .font(.title3)
+                                                    .foregroundColor(.green)
+                                            }
+                                        }
+                                        .padding(.bottom, 8)
+
                                         Text(card.contextSentence)
                                             .font(.callout)
                                             .italic()
                                             .foregroundColor(.secondary)
+                                            .multilineTextAlignment(.center)
+                                            .padding(.horizontal)
                                     }
                                 }
                             }
+                            .id(card.id)
+                            .transition(.opacity)
                         }
-                        .id(card.id)
-                        .transition(.opacity)
 
-                    case .cloze:
-                        Group {
-                            switch step {
-                            case .definition:
-                                VStack(spacing: 16) {
-                                    Text(blankSentence(card.contextSentence, word: card.word))
-                                        .font(.title2)
-                                        .multilineTextAlignment(.center)
-                                        .padding(.horizontal)
+                        Spacer()
 
-                                    Button("Show Hint") {
-                                        withAnimation { step = .hint }
+                        // Rating buttons (only after answer is revealed)
+                        if step == .answer {
+                            HStack(spacing: 12) {
+                                ForEach(SM2Scheduler.Rating.allCases, id: \.rawValue) { rating in
+                                    Button(rating.label) {
+                                        rateCard(card, rating: rating)
                                     }
-                                    .buttonStyle(.borderedProminent)
+                                    .buttonStyle(.bordered)
+                                    .tint(ratingColor(rating))
                                 }
-
-                            case .hint:
-                                VStack(spacing: 16) {
-                                    Text(blankSentence(card.contextSentence, word: card.word))
-                                        .font(.title2)
-                                        .multilineTextAlignment(.center)
-                                        .padding(.horizontal)
-
-                                    if let def = card.definition, !def.isEmpty, def != "Definition not found." {
-                                        VStack(spacing: 8) {
-                                            Text("Definition")
-                                                .font(.caption)
-                                                .foregroundColor(.secondary)
-                                            Text(def)
-                                                .font(.title3)
-                                                .multilineTextAlignment(.center)
-                                        }
-                                    } else {
-                                        Text("Definition not available.")
-                                            .font(.callout)
-                                            .foregroundColor(.secondary)
-                                    }
-
-                                    Button("Show Answer") {
-                                        withAnimation { step = .answer }
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                }
-
-                            case .answer:
-                                VStack(spacing: 16) {
-                                    VStack(spacing: 6) {
-                                        Text(card.word)
-                                            .font(.largeTitle)
-                                            .fontWeight(.bold)
-                                            .foregroundColor(.accentColor)
-                                        if !card.translation.isEmpty && card.translation != "Translation unavailable" {
-                                            Text(card.translation)
-                                                .font(.title3)
-                                                .foregroundColor(.green)
-                                        }
-                                    }
-                                    .padding(.bottom, 8)
-
-                                    Text(card.contextSentence)
-                                        .font(.callout)
-                                        .italic()
-                                        .foregroundColor(.secondary)
-                                        .multilineTextAlignment(.center)
-                                        .padding(.horizontal)
-                                }
-                            }
-                        }
-                        .id(card.id)
-                        .transition(.opacity)
-                    }
-
-                    Spacer()
-
-                    // Rating buttons (only after answer is revealed)
-                    if step == .answer {
-                        HStack(spacing: 12) {
-                            ForEach(SM2Scheduler.Rating.allCases, id: \.rawValue) { rating in
-                                Button(rating.label) {
-                                    rateCard(card, rating: rating)
-                                }
-                                .buttonStyle(.bordered)
-                                .tint(ratingColor(rating))
                             }
                         }
                     }
+                    .padding()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .transition(.opacity.combined(with: .scale))
                 }
-                .padding()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .transition(.opacity.combined(with: .scale))
             }
+        }
+        .onChange(of: isCramMode) { _, _ in
+            currentCardIndex = 0
+            sessionCompleted = false
+            step = .definition
         }
     }
     @ViewBuilder
