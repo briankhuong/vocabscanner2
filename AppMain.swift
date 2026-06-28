@@ -12,6 +12,7 @@ import AVFoundation
 import Combine
 import Vision
 import Translation
+import NaturalLanguage
 
 // --------------------------------------------------
 // MARK: - App Entry
@@ -35,7 +36,6 @@ final class Book {
     var author: String
     var dateAdded: Date
     
-    // A book has many vocabulary cards. If we delete the book, delete the cards.
     @Relationship(deleteRule: .cascade)
     var cards: [VocabCard] = []
     
@@ -49,10 +49,11 @@ final class Book {
 @Model
 final class VocabCard {
     var word: String
+    var pronunciation: String
+    var definition: String
     var contextSentence: String
     var translation: String // Vietnamese translation
     
-    // SM-2 Spaced Repetition Data
     var easeFactor: Double = 2.5
     var interval: Int = 0
     var repetitions: Int = 0
@@ -60,11 +61,13 @@ final class VocabCard {
     
     var book: Book?
     
-    init(word: String, contextSentence: String, translation: String = "") {
+    init(word: String, contextSentence: String, translation: String = "", pronunciation: String = "", definition: String = "") {
         self.word = word
         self.contextSentence = contextSentence
         self.translation = translation
-        self.nextReviewDate = Date() // Ready to review immediately
+        self.pronunciation = pronunciation
+        self.definition = definition
+        self.nextReviewDate = Date()
     }
 }
 
@@ -86,10 +89,131 @@ struct ContentView: View {
     }
 }
 
+// --------------------------------------------------
+// MARK: - Bookshelf Tab Views
+// --------------------------------------------------
 struct BookshelfView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \Book.title) private var books: [Book]
+    
     var body: some View {
         NavigationStack {
-            Text("My Books").font(.largeTitle).navigationTitle("Bookshelf")
+            Group {
+                if books.isEmpty {
+                    VStack(spacing: 20) {
+                        Image(systemName: "books.vertical")
+                            .font(.system(size: 60))
+                            .foregroundColor(.secondary)
+                        Text("Your bookshelf is empty.")
+                            .font(.title3)
+                            .foregroundColor(.secondary)
+                        Text("Go to the 'Scan' tab to capture some words.")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                    }
+                } else {
+                    List {
+                        ForEach(books) { book in
+                            NavigationLink(destination: BookDetailView(book: book)) {
+                                HStack {
+                                    Image(systemName: "book.closed.fill")
+                                        .foregroundColor(.accentColor)
+                                        .font(.title2)
+                                    
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(book.title)
+                                            .font(.headline)
+                                        Text("\(book.cards.count) word(s)")
+                                            .font(.subheadline)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                .padding(.vertical, 4)
+                            }
+                        }
+                        .onDelete(perform: deleteBooks)
+                    }
+                }
+            }
+            .navigationTitle("Bookshelf")
+        }
+    }
+    
+    private func deleteBooks(at offsets: IndexSet) {
+        for index in offsets {
+            modelContext.delete(books[index])
+        }
+    }
+}
+
+struct BookDetailView: View {
+    @Environment(\.modelContext) private var modelContext
+    let book: Book
+    
+    var body: some View {
+        List {
+            ForEach(book.cards) { card in
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(card.word)
+                            .font(.title3)
+                            .fontWeight(.bold)
+                            .foregroundColor(.accentColor)
+                        
+                        if !card.pronunciation.isEmpty {
+                            Text(card.pronunciation)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.secondary.opacity(0.1))
+                                .cornerRadius(4)
+                        }
+                    }
+                    
+                    if !card.definition.isEmpty {
+                        HStack(spacing: 8) {
+                            Rectangle()
+                                .fill(Color.accentColor.opacity(0.4))
+                                .frame(width: 3)
+                            Text(card.definition)
+                                .font(.subheadline)
+                                .foregroundColor(.primary)
+                        }
+                        .padding(.leading, 4)
+                    }
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Context Sentence:")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.secondary)
+                        
+                        Text(card.contextSentence)
+                            .font(.footnote)
+                            .italic()
+                        
+                        if !card.translation.isEmpty {
+                            Text(card.translation)
+                                .font(.footnote)
+                                .foregroundColor(.green)
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+                .padding(.vertical, 6)
+            }
+            .onDelete(perform: deleteCards)
+        }
+        .navigationTitle(book.title)
+    }
+    
+    private func deleteCards(at offsets: IndexSet) {
+        for index in offsets {
+            let card = book.cards[index]
+            modelContext.delete(card)
         }
     }
 }
@@ -225,8 +349,8 @@ extension CameraModel: AVCapturePhotoCaptureDelegate {
 struct CameraCaptureView: View {
     @ObservedObject var camera: CameraModel
     @State private var showWordSelection = false
-    @State private var selectedWordsToSave: [DetectedWord] = [] // 👈 Stores processed items
-    @State private var showSaveSheet = false // 👈 State to display save sheet
+    @State private var selectedWordsToSave: [DetectedWord] = []
+    @State private var showSaveSheet = false
     
     var body: some View {
         ZStack {
@@ -270,7 +394,6 @@ struct CameraCaptureView: View {
                 showWordSelection = true
             }
         }
-        // Step A: Capture View selection
         .fullScreenCover(isPresented: $showWordSelection) {
             if let image = camera.capturedImage {
                 WordSelectionView(
@@ -284,7 +407,6 @@ struct CameraCaptureView: View {
                         showWordSelection = false
                         camera.capturedImage = nil
                         
-                        // Fire save sheet delayed slightly so UIKit can dismiss cleanly
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                             showSaveSheet = true
                         }
@@ -292,7 +414,6 @@ struct CameraCaptureView: View {
                 )
             }
         }
-        // Step B: Present Local on-device translation sheet
         .sheet(isPresented: $showSaveSheet) {
             SaveToCollectionView(detectedWords: selectedWordsToSave)
         }
@@ -379,20 +500,15 @@ struct SaveToCollectionView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     
-    // Fetch all books dynamically from SwiftData
     @Query(sort: \Book.title) private var books: [Book]
     
     let detectedWords: [DetectedWord]
     
-    // UI State variables
     @State private var selectedBook: Book? = nil
     @State private var newBookTitle = ""
     @State private var isCreatingNewBook = false
     
-    // Hold processed items being prepared to save
     @State private var itemsToSave: [PendingVocabItem] = []
-    
-    // Trigger state to activate Apple's Translation Task
     @State private var translationTrigger: TranslationSession.Configuration? = nil
     
     var body: some View {
@@ -480,6 +596,53 @@ struct SaveToCollectionView: View {
             source: Locale.Language(identifier: "en-US"),
             target: Locale.Language(identifier: "vi-VN")
         )
+        
+        Task {
+            await lookupDefinitionsAndPronunciations()
+        }
+    }
+    
+    private func lookupDefinitionsAndPronunciations() async {
+        for i in itemsToSave.indices {
+            let word = itemsToSave[i].word.lowercased().trimmingCharacters(in: .punctuationCharacters)
+            guard let url = URL(string: "https://api.dictionaryapi.dev/api/v2/entries/en/\(word)") else { continue }
+            
+            do {
+                let (data, _) = try await URLSession.shared.data(from: url)
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                   let firstEntry = json.first {
+                    
+                    let phoneticText = firstEntry["phonetic"] as? String ?? ""
+                    var extractedPhonetic = phoneticText
+                    
+                    if extractedPhonetic.isEmpty,
+                       let phoneticsList = firstEntry["phonetics"] as? [[String: Any]] {
+                        for ph in phoneticsList {
+                            if let text = ph["text"] as? String, !text.isEmpty {
+                                extractedPhonetic = text
+                                break
+                            }
+                        }
+                    }
+                    
+                    var extractedDefinition = ""
+                    if let meanings = firstEntry["meanings"] as? [[String: Any]],
+                       let firstMeaning = meanings.first,
+                       let definitions = firstMeaning["definitions"] as? [[String: Any]],
+                       let firstDef = definitions.first,
+                       let defText = firstDef["definition"] as? String {
+                        extractedDefinition = defText
+                    }
+                    
+                    await MainActor.run {
+                        itemsToSave[i].pronunciation = extractedPhonetic
+                        itemsToSave[i].definition = extractedDefinition
+                    }
+                }
+            } catch {
+                print("Failed lookup for \(word): \(error.localizedDescription)")
+            }
+        }
     }
     
     private func saveCards() {
@@ -499,7 +662,9 @@ struct SaveToCollectionView: View {
             let card = VocabCard(
                 word: item.word,
                 contextSentence: item.originalSentence,
-                translation: item.translatedSentence
+                translation: item.translatedSentence,
+                pronunciation: item.pronunciation,
+                definition: item.definition
             )
             modelContext.insert(card)
             card.book = bookToUse
@@ -509,45 +674,75 @@ struct SaveToCollectionView: View {
     }
 }
 
-// Subview to cleanly handle the display with a binding
 struct VocabItemRowView: View {
     @Binding var item: PendingVocabItem
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
                 Text(item.word)
                     .font(.headline)
                     .foregroundColor(.accentColor)
+                
+                if !item.pronunciation.isEmpty {
+                    Text(item.pronunciation)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.1))
+                        .cornerRadius(4)
+                }
+                
                 Spacer()
+                
                 if item.translatedSentence.isEmpty {
-                    ProgressView() // Shows a spinner while translating
+                    ProgressView()
                 } else {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.green)
                 }
             }
             
-            Text(item.originalSentence)
-                .font(.subheadline)
-                .italic()
-                .foregroundColor(.secondary)
+            if !item.definition.isEmpty {
+                HStack(spacing: 8) {
+                    Rectangle()
+                        .fill(Color.accentColor.opacity(0.3))
+                        .frame(width: 2)
+                    Text(item.definition)
+                        .font(.footnote)
+                        .foregroundColor(.primary)
+                }
+                .padding(.leading, 4)
+            } else {
+                Text("Searching dictionary definition...")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
             
-            if !item.translatedSentence.isEmpty {
-                Text(item.translatedSentence)
-                    .font(.footnote)
-                    .foregroundColor(.green)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.originalSentence)
+                    .font(.caption)
+                    .italic()
+                    .foregroundColor(.secondary)
+                
+                if !item.translatedSentence.isEmpty {
+                    Text(item.translatedSentence)
+                        .font(.caption)
+                        .foregroundColor(.green)
+                }
             }
         }
         .padding(.vertical, 4)
     }
 }
 
-// Helper struct to manage state within the view before saving to SwiftData
 struct PendingVocabItem: Identifiable {
     let id = UUID()
     let word: String
     let originalSentence: String
+    var pronunciation: String = ""
+    var definition: String = ""
     var translatedSentence: String = ""
 }
 
@@ -561,7 +756,7 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
     
     private var scrollView: UIScrollView!
     private var imageView: UIImageView!
-    private var overlayView: UIView! // Holds all our bounding boxes
+    private var overlayView: UIView!
     private var bottomBar: UIView!
     private var wordScrollView: UIScrollView!
     private var wordStackView: UIStackView!
@@ -577,8 +772,8 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
         setupBottomBar()
         runOCR()
     }
+    
     private func updateSelectedLabel() {
-        // Clean old bubbles out of the stack
         wordStackView.arrangedSubviews.forEach { $0.removeFromSuperview() }
         
         if selectedWords.isEmpty {
@@ -589,7 +784,6 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
             wordStackView.addArrangedSubview(emptyLabel)
         } else {
             for word in selectedWords {
-                // Generate a sleek bubble layout for each word
                 let tagView = UIView()
                 tagView.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.15)
                 tagView.layer.cornerRadius = 12
@@ -613,7 +807,6 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
                 wordStackView.addArrangedSubview(tagView)
             }
             
-            // Auto-scroll to the end of the scrollview so the newest word is always visible
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                 guard let self = self else { return }
                 let rightOffset = CGPoint(x: max(0, self.wordScrollView.contentSize.width - self.wordScrollView.bounds.width), y: 0)
@@ -621,6 +814,7 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
             }
         }
     }
+    
     private func setupScrollView() {
         scrollView = UIScrollView(frame: view.bounds)
         scrollView.delegate = self
@@ -640,7 +834,6 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
         scrollView.addSubview(imageView)
         scrollView.contentSize = imageView.bounds.size
         
-        // Setup overlay view inside the image view
         overlayView = UIView()
         overlayView.isUserInteractionEnabled = true
         imageView.addSubview(overlayView)
@@ -652,13 +845,11 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
         bottomBar.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(bottomBar)
         
-        // 1. Setup the horizontal ScrollView for selected words
         wordScrollView = UIScrollView()
         wordScrollView.showsHorizontalScrollIndicator = false
         wordScrollView.translatesAutoresizingMaskIntoConstraints = false
         bottomBar.addSubview(wordScrollView)
         
-        // 2. Setup the StackView inside the ScrollView to hold word bubbles
         wordStackView = UIStackView()
         wordStackView.axis = .horizontal
         wordStackView.spacing = 8
@@ -666,7 +857,6 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
         wordStackView.translatesAutoresizingMaskIntoConstraints = false
         wordScrollView.addSubview(wordStackView)
         
-        // 3. Setup Buttons
         let clearButton = UIButton(type: .system)
         clearButton.setTitle("Clear", for: .normal)
         clearButton.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .medium)
@@ -688,27 +878,23 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
         cancelButton.translatesAutoresizingMaskIntoConstraints = false
         bottomBar.addSubview(cancelButton)
         
-        // 4. Set constraints
         NSLayoutConstraint.activate([
             bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             bottomBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             bottomBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
             bottomBar.heightAnchor.constraint(equalToConstant: 95),
             
-            // Word List ScrollView Constraints
             wordScrollView.topAnchor.constraint(equalTo: bottomBar.topAnchor, constant: 8),
             wordScrollView.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor, constant: 16),
             wordScrollView.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor, constant: -16),
             wordScrollView.heightAnchor.constraint(equalToConstant: 32),
             
-            // StackView Constraints inside ScrollView
             wordStackView.leadingAnchor.constraint(equalTo: wordScrollView.contentLayoutGuide.leadingAnchor),
             wordStackView.trailingAnchor.constraint(equalTo: wordScrollView.contentLayoutGuide.trailingAnchor),
             wordStackView.topAnchor.constraint(equalTo: wordScrollView.contentLayoutGuide.topAnchor),
             wordStackView.bottomAnchor.constraint(equalTo: wordScrollView.contentLayoutGuide.bottomAnchor),
             wordStackView.heightAnchor.constraint(equalTo: wordScrollView.heightAnchor),
             
-            // Controls Row Constraints
             clearButton.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor, constant: 20),
             clearButton.bottomAnchor.constraint(equalTo: bottomBar.bottomAnchor, constant: -12),
             
@@ -719,11 +905,10 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
             processButton.bottomAnchor.constraint(equalTo: bottomBar.bottomAnchor, constant: -12)
         ])
         
-        // 5. Populate initial label state safely
         updateSelectedLabel()
     }
+    
     private func runOCR() {
-        // Use your specialized method that returns bounding boxes
         WordDetector.recognizeWords(in: image) { [weak self] words in
             DispatchQueue.main.async {
                 self?.drawWordBoxes(words)
@@ -732,18 +917,14 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
     }
     
     private func drawWordBoxes(_ words: [DetectedWord]) {
-        // Clear any existing boxes
         overlayView.subviews.forEach { $0.removeFromSuperview() }
         
-        // Calculate the exact frame where the image is drawn inside the UIImageView
         let displayedRect = AVMakeRect(aspectRatio: image.size, insideRect: imageView.bounds)
         overlayView.frame = displayedRect
         
         for word in words {
             let box = word.boundingBox
             
-            // Vision framework coordinates: origin is bottom-left, normalized (0.0 to 1.0)
-            // UIKit coordinates: origin is top-left
             let x = box.origin.x * displayedRect.width
             let y = (1 - box.origin.y - box.height) * displayedRect.height
             let width = box.width * displayedRect.width
@@ -767,20 +948,21 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
         if boxView.isSelectedWord {
             selectedWords.append(boxView.detectedWord)
         } else {
-            selectedWords.removeAll { $0.id == boxView.detectedWord.id } // 👈 Remove by ID
+            selectedWords.removeAll { $0.id == boxView.detectedWord.id }
         }
         
         updateSelectedLabel()
     }
+    
     @objc private func clearSelection() {
         selectedWords.removeAll()
-        updateSelectedLabel() // Reset label text
+        updateSelectedLabel()
         
-        // Reset all visual states
         for case let boxView as WordBoxView in overlayView.subviews {
             boxView.isSelectedWord = false
         }
     }
+    
     @objc private func processWords() {
         onProcess?(selectedWords)
     }
@@ -789,7 +971,6 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
         onDismiss?()
     }
     
-    // MARK: - Zooming
     func viewForZooming(in scrollView: UIScrollView) -> UIView? {
         return imageView
     }
@@ -803,13 +984,11 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         
-        // Only update frames if we aren't zooming to prevent layout resetting during zoom
         if scrollView.zoomScale == 1.0 {
             scrollView.frame = view.bounds
             imageView.frame = scrollView.bounds
             scrollView.contentSize = imageView.bounds.size
             
-            // Re-align the overlay view when layout changes (e.g., orientation change)
             let displayedRect = AVMakeRect(aspectRatio: image.size, insideRect: imageView.bounds)
             overlayView.frame = displayedRect
         }
@@ -823,7 +1002,7 @@ struct DetectedWord: Identifiable {
     let id = UUID()
     let text: String
     let boundingBox: CGRect
-    let contextSentence: String // 👇 New property!
+    let contextSentence: String
 }
 
 final class WordDetector {
@@ -839,6 +1018,16 @@ final class WordDetector {
                   error == nil else {
                 completion([])
                 return
+            }
+            
+            let fullText = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+            
+            let tokenizer = NLTokenizer(unit: .sentence)
+            tokenizer.string = fullText
+            var sentences: [String] = []
+            tokenizer.enumerateTokens(in: fullText.startIndex..<fullText.endIndex) { tokenRange, _ in
+                sentences.append(String(fullText[tokenRange]))
+                return true
             }
             
             var words: [DetectedWord] = []
@@ -860,7 +1049,11 @@ final class WordDetector {
                     let wordY = lineBox.origin.y
                     let wordBox = CGRect(x: wordX, y: wordY, width: wordWidth, height: wordHeight)
                     
-                    words.append(DetectedWord(text: rawWord, boundingBox: wordBox, contextSentence: lineText))
+                    let fullSentence = sentences.first { sentence in
+                        sentence.localizedCaseInsensitiveContains(rawWord)
+                    } ?? lineText
+                    
+                    words.append(DetectedWord(text: rawWord, boundingBox: wordBox, contextSentence: fullSentence))
                     currentX += wordWidth
                 }
             }
