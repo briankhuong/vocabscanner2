@@ -1,11 +1,3 @@
-//
-//  ReviewSessionView.swift
-//  VocabScanner
-//
-//  Created by brian.khuong on 28/6/26.
-//
-
-import Foundation
 import SwiftUI
 import SwiftData
 
@@ -13,11 +5,16 @@ struct ReviewSessionView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \VocabCard.nextReviewDate) private var allCards: [VocabCard]
     @State private var currentCardIndex = 0
-    @State private var isShowingAnswer = false
+    @State private var step: Step = .definition
     @State private var sessionCompleted = false
     @State private var reviewedCount = 0
 
-    // Cards due today
+    enum Step {
+        case definition   // show definition, tap for hint
+        case hint         // show blanked sentence, tap for answer
+        case answer       // show word + translation, then rate
+    }
+
     private var dueCards: [VocabCard] {
         allCards.filter { $0.nextReviewDate <= Date() }
     }
@@ -44,63 +41,103 @@ struct ReviewSessionView: View {
             } else if currentCardIndex < dueCards.count {
                 let card = dueCards[currentCardIndex]
                 VStack(spacing: 24) {
-                    // Progress
+                    // Progress bar
                     ProgressView(value: Double(currentCardIndex), total: Double(dueCards.count))
                         .padding(.horizontal)
 
                     Spacer()
 
-                    // Blanked sentence
-                    Text(blankSentence(card.contextSentence, word: card.word))
-                        .font(.title2)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
+                    // Card content based on step
+                    switch step {
+                    case .definition:
+                        VStack(spacing: 16) {
+                            Text("Definition")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
 
-                    if isShowingAnswer {
-                        VStack(spacing: 8) {
-                            Text(card.word)
-                                .font(.largeTitle)
-                                .fontWeight(.bold)
-                                .foregroundColor(.accentColor)
-
-                            Text(card.translation)
+                            Text(displayedDefinition(card.definition))
                                 .font(.title3)
-                                .foregroundColor(.primary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal)
+
+                            Button("Show Hint") {
+                                withAnimation { step = .hint }
+                            }
+                            .buttonStyle(.borderedProminent)
                         }
-                        .transition(.opacity.combined(with: .scale))
+
+                    case .hint:
+                        VStack(spacing: 16) {
+                            Text("Hint: Example Sentence")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            Text(blankSentence(card.contextSentence, word: card.word))
+                                .font(.title2)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal)
+
+                            Button("Show Answer") {
+                                withAnimation { step = .answer }
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+
+                    case .answer:
+                        VStack(spacing: 16) {
+                            // Word and translation
+                            VStack(spacing: 6) {
+                                Text(card.word)
+                                    .font(.largeTitle)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.accentColor)
+
+                                Text(card.translation)
+                                    .font(.title3)
+                                    .foregroundColor(.primary)
+                            }
+                            .padding(.bottom, 8)
+
+                            // Optionally show full example sentence again
+                            Text(card.contextSentence)
+                                .font(.callout)
+                                .italic()
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal)
+
+                            // Rating buttons
+                            HStack(spacing: 12) {
+                                ForEach(SM2Scheduler.Rating.allCases, id: \.rawValue) { rating in
+                                    Button(rating.label) {
+                                        rateCard(card, rating: rating)
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .tint(ratingColor(rating))
+                                }
+                            }
+                        }
                     }
 
                     Spacer()
-
-                    if !isShowingAnswer {
-                        Button("Show Answer") {
-                            withAnimation {
-                                isShowingAnswer = true
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                    } else {
-                        HStack(spacing: 12) {
-                            ForEach(SM2Scheduler.Rating.allCases, id: \.rawValue) { rating in
-                                Button(rating.label) {
-                                    rateCard(card, rating: rating)
-                                }
-                                .buttonStyle(.bordered)
-                                .tint(ratingColor(rating))
-                            }
-                        }
-                    }
                 }
                 .padding()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .transition(.opacity.combined(with: .scale))
             }
         }
     }
 
+    // MARK: - Helpers
+
+    private func displayedDefinition(_ def: String?) -> String {
+        guard let def = def, !def.isEmpty, def != "Definition not found." else {
+            return "Definition not available."
+        }
+        return def
+    }
+
     private func blankSentence(_ sentence: String, word: String) -> String {
-        // Replace the target word (case-insensitive, whole word) with "..."
-        // This is a simple replacement; for better results you might want
-        // to create a regular expression with word boundaries.
         let pattern = "\\b\(NSRegularExpression.escapedPattern(for: word))\\b"
         guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
             return sentence
@@ -113,9 +150,8 @@ struct ReviewSessionView: View {
         SM2Scheduler.update(card: card, rating: rating)
         reviewedCount += 1
 
-        // Move to next card
         withAnimation {
-            isShowingAnswer = false
+            step = .definition
             if currentCardIndex + 1 < dueCards.count {
                 currentCardIndex += 1
             } else {
@@ -123,7 +159,6 @@ struct ReviewSessionView: View {
             }
         }
 
-        // Save context
         try? modelContext.save()
     }
 
