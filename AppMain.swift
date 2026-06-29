@@ -52,6 +52,7 @@ final class VocabCard {
     var pronunciation: String?
     var definition: String?
     var dictionaryExample: String? = nil
+    var pronunciationAudioURL: String? = nil
     var contextSentence: String
     var translation: String
     
@@ -64,12 +65,14 @@ final class VocabCard {
     
     var sortOrder: Int = 0
     
-    init(word: String, contextSentence: String, translation: String = "", pronunciation: String = "", definition: String = "", dictionaryExample: String? = nil) {
+    init(word: String, contextSentence: String, translation: String = "", pronunciation: String = "", definition: String = "", dictionaryExample: String? = nil, pronunciationAudioURL: String? = nil) {
         self.word = word
         self.contextSentence = contextSentence
         self.translation = translation
         self.pronunciation = pronunciation
         self.definition = definition
+        self.dictionaryExample = dictionaryExample
+        self.pronunciationAudioURL = pronunciationAudioURL
         self.nextReviewDate = Date()
     }
 }
@@ -79,30 +82,48 @@ final class VocabCard {
 // --------------------------------------------------
 struct ContentView: View {
     @StateObject private var cameraModel = CameraModel()
-    @Query(sort: \VocabCard.nextReviewDate) private var allCards: [VocabCard]
-    
-    var dueCount: Int {
-        allCards.filter { $0.nextReviewDate <= Date() }.count
-    }
-    
+    @State private var dueCount = 0
+    @State private var selectedTab = 0
+    @Environment(\.modelContext) private var modelContext
+
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             BookshelfView()
                 .tabItem { Label("Bookshelf", systemImage: "books.vertical.fill") }
+                .tag(0)
             
-            CameraCaptureView(camera: cameraModel)
+            CameraCaptureView(camera: cameraModel, isActive: selectedTab == 1)
                 .tabItem { Label("Scan", systemImage: "camera.fill") }
+                .tag(1)
             
             ReviewSessionView()
                 .tabItem {
                     Label("Review", systemImage: "repeat.circle.fill")
                 }
-                .badge(dueCount)   // always works
+                .badge(dueCount)
+                .tag(2)
             
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+                .tag(3)
         }
         .tint(.accentColor)
+        .task {
+            await updateDueCount()
+        }
+    }
+
+    private func updateDueCount() async {
+        let context = modelContext
+        let now = Date()
+        let predicate = #Predicate<VocabCard> { $0.nextReviewDate <= now }
+        let descriptor = FetchDescriptor<VocabCard>(predicate: predicate)
+        do {
+            let count = try context.fetchCount(descriptor)
+            await MainActor.run { dueCount = count }
+        } catch {
+            print("Failed to fetch due count: \(error)")
+        }
     }
 }
 // --------------------------------------------------
@@ -113,14 +134,17 @@ struct BookshelfView: View {
     @Query(sort: \Book.title) private var books: [Book]
     @State private var showMergeSheet = false
     @State private var showImporter = false
-    
+    @State private var showGrid = false
     var body: some View {
         NavigationStack {
             List {
                 // Activity tracker at the top
                 Section {
-                    ActivityGridView()
-                        .padding(.vertical, 8)
+                    // Only show grid when Bookshelf is visible (slight performance gain)
+                    if showGrid {
+                        ActivityGridView()
+                            .padding(.vertical, 8)
+                    }
                 }
 
                 if books.isEmpty {
@@ -161,6 +185,7 @@ struct BookshelfView: View {
                 }
             }
             .navigationTitle("Bookshelf")
+            .onAppear { showGrid = true }
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button {
@@ -255,7 +280,7 @@ struct BookDetailView: View {
                             .fontWeight(.bold)
                             .foregroundColor(.accentColor)
                         Button {
-                            SpeechService.speak(word: card.word)
+                            SpeechService.pronounce(word: card.word, audioURL: card.pronunciationAudioURL)
                         } label: {
                             Image(systemName: "speaker.wave.2")
                                 .font(.title3)
@@ -690,6 +715,7 @@ extension CameraModel: AVCapturePhotoCaptureDelegate {
 // --------------------------------------------------
 struct CameraCaptureView: View {
     @ObservedObject var camera: CameraModel
+    let isActive: Bool          // ← new
     @State private var showWordSelection = false
     @State private var selectedWordsToTranslate: [DetectedWord] = []
     @State private var finalItemsToSave: [PendingVocabItem] = []
@@ -739,8 +765,13 @@ struct CameraCaptureView: View {
                 }
             }
         }
-        .onAppear { camera.startCamera() }
-        .onDisappear { camera.stopCamera() }
+        .onChange(of: isActive) { _, active in
+            if active {
+                camera.startCamera()
+            } else {
+                camera.stopCamera()
+            }
+        }
         .onChange(of: camera.capturedImage) { _, newImage in
             if newImage != nil {
                 showWordSelection = true
@@ -975,6 +1006,7 @@ struct SaveToCollectionView: View {
                         } else {
                             itemsToSave[i].pronunciation = "N/A"
                         }
+                        itemsToSave[i].pronunciationAudioURL = mwResult.audioURL
                     }
                     continue  // success, skip fallback
                 }
@@ -1075,11 +1107,13 @@ struct SaveToCollectionView: View {
                 translation: item.translatedSentence,
                 pronunciation: item.pronunciation,
                 definition: item.definition,
-                dictionaryExample: item.dictionaryExample
+                dictionaryExample: item.dictionaryExample,
+                pronunciationAudioURL: item.pronunciationAudioURL
             )
             modelContext.insert(card)
             card.book = bookToUse
             bookToUse.cards.append(card)
+            SpeechService.preloadAudio(from: item.pronunciationAudioURL)   // preload the audio
         }
         
         try? modelContext.save()
@@ -1098,7 +1132,7 @@ struct VocabItemRowView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(item.word).font(.headline).foregroundColor(.accentColor)
                 Button {
-                    SpeechService.speak(word: item.word)
+                    SpeechService.pronounce(word: item.word, audioURL: item.pronunciationAudioURL)
                 } label: {
                     Image(systemName: "speaker.wave.2")
                         .font(.headline)
@@ -1155,6 +1189,7 @@ struct PendingVocabItem: Identifiable {
     var pronunciation: String = ""
     var definition: String = ""
     var dictionaryExample: String? = nil
+    var pronunciationAudioURL: String? = nil
     var translatedSentence: String = ""
 }
 // --------------------------------------------------

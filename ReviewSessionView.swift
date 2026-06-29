@@ -125,7 +125,7 @@ struct ReviewSessionView: View {
                                                 .font(.largeTitle)
                                                 .fontWeight(.bold)
                                             Button {
-                                                SpeechService.speak(word: card.word)
+                                                SpeechService.pronounce(word: card.word, audioURL: card.pronunciationAudioURL)
                                             } label: {
                                                 Image(systemName: "speaker.wave.2")
                                                     .font(.title2)
@@ -145,7 +145,7 @@ struct ReviewSessionView: View {
                                                 .font(.largeTitle)
                                                 .fontWeight(.bold)
                                             Button {
-                                                SpeechService.speak(word: card.word)
+                                                SpeechService.pronounce(word: card.word, audioURL: card.pronunciationAudioURL)
                                             } label: {
                                                 Image(systemName: "speaker.wave.2")
                                                     .font(.title2)
@@ -249,7 +249,7 @@ struct ReviewSessionView: View {
                                                     .fontWeight(.bold)
                                                     .foregroundColor(.accentColor)
                                                 Button {
-                                                    SpeechService.speak(word: card.word)
+                                                    SpeechService.pronounce(word: card.word, audioURL: card.pronunciationAudioURL)
                                                 } label: {
                                                     Image(systemName: "speaker.wave.2")
                                                         .font(.title2)
@@ -318,7 +318,7 @@ struct ReviewSessionView: View {
                         .fontWeight(.bold)
                         .foregroundColor(.accentColor)
                     Button {
-                        SpeechService.speak(word: card.word)
+                        SpeechService.pronounce(word: card.word, audioURL: card.pronunciationAudioURL)
                     } label: {
                         Image(systemName: "speaker.wave.2")
                             .font(.title2)

@@ -6,7 +6,8 @@ struct MerriamWebster {
     struct DefinitionResult {
         let definition: String
         let example: String?
-        let pronunciation: String?   // phonetic notation
+        let pronunciation: String?
+        let audioURL: String?        // remote audio file for perfect pronunciation
     }
 
     /// Fetch definition + example + pronunciation from Merriam‑Webster Learner's Dictionary
@@ -72,6 +73,24 @@ struct MerriamWebster {
             pronunciation = mw   // e.g., "ˈhe-lō"
         }
 
-        return DefinitionResult(definition: definition, example: example, pronunciation: pronunciation)
+        // Build audio URL from the first "prs" entry
+        var audioURL: String? = nil
+        if let hwi = entryDict["hwi"] as? [String: Any],
+           let prs = hwi["prs"] as? [[String: Any]],
+           let sound = prs.first?["sound"] as? [String: Any],
+           let audioKey = sound["audio"] as? String {
+            let subdir: String
+            let lowerKey = audioKey.lowercased()
+            if lowerKey.hasPrefix("bix") { subdir = "bix" }
+            else if lowerKey.hasPrefix("gg") { subdir = "gg" }
+            else if let firstChar = lowerKey.first, firstChar.isNumber { subdir = "number" }
+            else { subdir = String(lowerKey.prefix(1)) }
+            audioURL = "https://media.merriam-webster.com/soundc11/\(subdir)/\(audioKey).wav"
+            print("[MW Audio] key=\(audioKey) -> URL=\(audioURL ?? "nil")")
+        } else {
+            print("[MW Audio] No audio key found in response")
+        }
+
+        return DefinitionResult(definition: definition, example: example, pronunciation: pronunciation, audioURL: audioURL)
     }
 }
