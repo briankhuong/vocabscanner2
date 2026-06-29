@@ -5,6 +5,7 @@ struct VocabCardExport: Codable {
     var word: String
     var pronunciation: String?
     var definition: String?
+    var dictionaryExample: String?
     var contextSentence: String
     var translation: String
     var easeFactor: Double
@@ -16,6 +17,7 @@ struct VocabCardExport: Codable {
         self.word = card.word
         self.pronunciation = card.pronunciation
         self.definition = card.definition
+        self.dictionaryExample = card.dictionaryExample
         self.contextSentence = card.contextSentence
         self.translation = card.translation
         self.easeFactor = card.easeFactor
@@ -24,14 +26,14 @@ struct VocabCardExport: Codable {
         self.nextReviewDate = card.nextReviewDate
     }
 
-    /// Convert back to a VocabCard (without a book relationship)
     func toVocabCard() -> VocabCard {
         let card = VocabCard(
             word: word,
             contextSentence: contextSentence,
             translation: translation,
             pronunciation: pronunciation ?? "",
-            definition: definition ?? ""
+            definition: definition ?? "",
+            dictionaryExample: dictionaryExample
         )
         card.easeFactor = easeFactor
         card.interval = interval

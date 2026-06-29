@@ -11,6 +11,7 @@ struct ReviewSessionView: View {
     @State private var sessionCompleted = false
     @State private var reviewedCount = 0
     @State private var isCramMode = false
+    @State private var sessionCards: [VocabCard]? = nil
 
     enum Step {
         case definition   // show definition, tap for hint
@@ -19,8 +20,15 @@ struct ReviewSessionView: View {
     }
 
     private var dueCards: [VocabCard] {
+        // Use the snapshot if we have one; otherwise compute live (only before session starts)
+        if let cards = sessionCards {
+            return cards
+        }
+        return computeDueCards()
+    }
+
+    private func computeDueCards() -> [VocabCard] {
         if isCramMode {
-            // Show all cards, ignore due date and cap
             return allCards
         }
         let allDue = allCards.filter { $0.nextReviewDate <= Date() }
@@ -46,6 +54,7 @@ struct ReviewSessionView: View {
                     )
                 } else if sessionCompleted {
                     VStack(spacing: 20) {
+                        Spacer()
                         Image(systemName: "party.popper.fill")
                             .font(.system(size: 60))
                             .foregroundColor(.accentColor)
@@ -54,7 +63,9 @@ struct ReviewSessionView: View {
                             .fontWeight(.bold)
                         Text("You reviewed \(reviewedCount) card(s).")
                             .foregroundColor(.secondary)
+                        Spacer()
                     }
+                    .frame(maxHeight: .infinity)
                 } else if currentCardIndex < dueCards.count {
                     let card = dueCards[currentCardIndex]
                     let currentStyle = LearningStyle(rawValue: learningStyle) ?? .definitionFirst
@@ -109,9 +120,17 @@ struct ReviewSessionView: View {
                                 switch step {
                                 case .definition:
                                     VStack(spacing: 16) {
-                                        Text(card.word)
-                                            .font(.largeTitle)
-                                            .fontWeight(.bold)
+                                        HStack {
+                                            Text(card.word)
+                                                .font(.largeTitle)
+                                                .fontWeight(.bold)
+                                            Button {
+                                                SpeechService.speak(word: card.word)
+                                            } label: {
+                                                Image(systemName: "speaker.wave.2")
+                                                    .font(.title2)
+                                            }
+                                        }
 
                                         Button("Show Definition") {
                                             withAnimation { step = .hint }
@@ -121,9 +140,17 @@ struct ReviewSessionView: View {
 
                                 case .hint:
                                     VStack(spacing: 16) {
-                                        Text(card.word)
-                                            .font(.largeTitle)
-                                            .fontWeight(.bold)
+                                        HStack {
+                                            Text(card.word)
+                                                .font(.largeTitle)
+                                                .fontWeight(.bold)
+                                            Button {
+                                                SpeechService.speak(word: card.word)
+                                            } label: {
+                                                Image(systemName: "speaker.wave.2")
+                                                    .font(.title2)
+                                            }
+                                        }
 
                                         if let def = card.definition, !def.isEmpty, def != "Definition not found." {
                                             VStack(spacing: 8) {
@@ -216,10 +243,18 @@ struct ReviewSessionView: View {
                                 case .answer:
                                     VStack(spacing: 16) {
                                         VStack(spacing: 6) {
-                                            Text(card.word)
-                                                .font(.largeTitle)
-                                                .fontWeight(.bold)
-                                                .foregroundColor(.accentColor)
+                                            HStack {
+                                                Text(card.word)
+                                                    .font(.largeTitle)
+                                                    .fontWeight(.bold)
+                                                    .foregroundColor(.accentColor)
+                                                Button {
+                                                    SpeechService.speak(word: card.word)
+                                                } label: {
+                                                    Image(systemName: "speaker.wave.2")
+                                                        .font(.title2)
+                                                }
+                                            }
                                             if !card.translation.isEmpty && card.translation != "Translation unavailable" {
                                                 Text(card.translation)
                                                     .font(.title3)
@@ -262,7 +297,12 @@ struct ReviewSessionView: View {
                 }
             }
         }
+        .onAppear {
+            // Take a snapshot of due cards for this session
+            sessionCards = computeDueCards()
+        }
         .onChange(of: isCramMode) { _, _ in
+            sessionCards = computeDueCards()
             currentCardIndex = 0
             sessionCompleted = false
             step = .definition
@@ -272,10 +312,18 @@ struct ReviewSessionView: View {
     private func answerView(for card: VocabCard) -> some View {
         VStack(spacing: 16) {
             VStack(spacing: 6) {
-                Text(card.word)
-                    .font(.largeTitle)
-                    .fontWeight(.bold)
-                    .foregroundColor(.accentColor)
+                HStack {
+                    Text(card.word)
+                        .font(.largeTitle)
+                        .fontWeight(.bold)
+                        .foregroundColor(.accentColor)
+                    Button {
+                        SpeechService.speak(word: card.word)
+                    } label: {
+                        Image(systemName: "speaker.wave.2")
+                            .font(.title2)
+                    }
+                }
                 Text(card.translation)
                     .font(.title3)
                     .foregroundColor(.primary)

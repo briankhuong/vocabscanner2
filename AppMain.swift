@@ -51,6 +51,7 @@ final class VocabCard {
     var word: String
     var pronunciation: String?
     var definition: String?
+    var dictionaryExample: String? = nil
     var contextSentence: String
     var translation: String
     
@@ -63,7 +64,7 @@ final class VocabCard {
     
     var sortOrder: Int = 0
     
-    init(word: String, contextSentence: String, translation: String = "", pronunciation: String = "", definition: String = "") {
+    init(word: String, contextSentence: String, translation: String = "", pronunciation: String = "", definition: String = "", dictionaryExample: String? = nil) {
         self.word = word
         self.contextSentence = contextSentence
         self.translation = translation
@@ -253,6 +254,12 @@ struct BookDetailView: View {
                             .font(.title3)
                             .fontWeight(.bold)
                             .foregroundColor(.accentColor)
+                        Button {
+                            SpeechService.speak(word: card.word)
+                        } label: {
+                            Image(systemName: "speaker.wave.2")
+                                .font(.title3)
+                        }
                         if let pronunciation = card.pronunciation, !pronunciation.isEmpty, pronunciation != "N/A" {
                             Text(pronunciation)
                                 .font(.subheadline)
@@ -271,6 +278,17 @@ struct BookDetailView: View {
                             Text(definition)
                                 .font(.subheadline)
                                 .foregroundColor(.primary)
+                        }
+                        .padding(.leading, 4)
+                    }
+                    if let dictExample = card.dictionaryExample, !dictExample.isEmpty {
+                        HStack(spacing: 8) {
+                            Rectangle()
+                                .fill(Color.orange.opacity(0.4))
+                                .frame(width: 3)
+                            Text(dictExample)
+                                .font(.subheadline)
+                                .foregroundColor(.orange)
                         }
                         .padding(.leading, 4)
                     }
@@ -943,54 +961,91 @@ struct SaveToCollectionView: View {
     
     private func lookupDefinitionsAndPronunciations() async {
         for i in itemsToSave.indices {
-            let word = itemsToSave[i].word.lowercased().trimmingCharacters(in: .punctuationCharacters)
-            guard let encodedWord = word.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
-                  let url = URL(string: "https://api.dictionaryapi.dev/api/v2/entries/en/" + encodedWord) else {
-                await setFallbackDefinition(for: i)
-                continue
-            }
+            let word = itemsToSave[i].word.trimmingCharacters(in: .punctuationCharacters)
             
+            // Try Merriam‑Webster first
             do {
-                let (data, response) = try await URLSession.shared.data(from: url)
-                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
-                    await setFallbackDefinition(for: i)
-                    continue
-                }
-                
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-                   let firstEntry = json.first {
-                    
-                    let phoneticText = firstEntry["phonetic"] as? String ?? ""
-                    var extractedPhonetic = phoneticText
-                    
-                    if extractedPhonetic.isEmpty, let phoneticsList = firstEntry["phonetics"] as? [[String: Any]] {
-                        for ph in phoneticsList {
-                            if let text = ph["text"] as? String, !text.isEmpty {
-                                extractedPhonetic = text
-                                break
-                            }
+                if let mwResult = try await MerriamWebster.lookup(word: word),
+                   !mwResult.definition.isEmpty {
+                    await MainActor.run {
+                        itemsToSave[i].definition = mwResult.definition
+                        itemsToSave[i].dictionaryExample = mwResult.example
+                        if let pron = mwResult.pronunciation {
+                            itemsToSave[i].pronunciation = pron
+                        } else {
+                            itemsToSave[i].pronunciation = "N/A"
                         }
                     }
-                    
-                    var extractedDefinition = ""
-                    if let meanings = firstEntry["meanings"] as? [[String: Any]],
-                       let firstMeaning = meanings.first,
-                       let definitions = firstMeaning["definitions"] as? [[String: Any]],
-                       let firstDef = definitions.first,
-                       let defText = firstDef["definition"] as? String {
-                        extractedDefinition = defText
-                    }
-                    
-                    await MainActor.run {
-                        itemsToSave[i].pronunciation = extractedPhonetic.isEmpty ? "N/A" : extractedPhonetic
-                        itemsToSave[i].definition = extractedDefinition.isEmpty ? "Definition not found." : extractedDefinition
-                    }
-                } else {
-                    await setFallbackDefinition(for: i)
+                    continue  // success, skip fallback
                 }
             } catch {
-                await setFallbackDefinition(for: i)
+                print("Merriam‑Webster error: \(error)")
             }
+            
+            // Fallback to free Dictionary API
+            await lookupFreeDictionary(for: i)
+        }
+    }
+    
+    private func lookupFreeDictionary(for index: Int) async {
+        let word = itemsToSave[index].word.lowercased().trimmingCharacters(in: .punctuationCharacters)
+        guard let encodedWord = word.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: "https://api.dictionaryapi.dev/api/v2/entries/en/" + encodedWord) else {
+            await setFallbackDefinition(for: index)
+            return
+        }
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
+                await setFallbackDefinition(for: index)
+                return
+            }
+            
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+               let firstEntry = json.first {
+                
+                let phoneticText = firstEntry["phonetic"] as? String ?? ""
+                var extractedPhonetic = phoneticText
+                
+                if extractedPhonetic.isEmpty, let phoneticsList = firstEntry["phonetics"] as? [[String: Any]] {
+                    for ph in phoneticsList {
+                        if let text = ph["text"] as? String, !text.isEmpty {
+                            extractedPhonetic = text
+                            break
+                        }
+                    }
+                }
+                
+                var extractedDefinition = ""
+                if let meanings = firstEntry["meanings"] as? [[String: Any]],
+                   let firstMeaning = meanings.first,
+                   let definitions = firstMeaning["definitions"] as? [[String: Any]],
+                   let firstDef = definitions.first,
+                   let defText = firstDef["definition"] as? String {
+                    extractedDefinition = defText
+                }
+                
+                // Also grab example from the free dictionary, if any
+                var extractedExample: String? = nil
+                if let meanings = firstEntry["meanings"] as? [[String: Any]],
+                   let firstMeaning = meanings.first,
+                   let definitions = firstMeaning["definitions"] as? [[String: Any]],
+                   let firstDef = definitions.first,
+                   let example = firstDef["example"] as? String {
+                    extractedExample = example
+                }
+                
+                await MainActor.run {
+                    itemsToSave[index].pronunciation = extractedPhonetic.isEmpty ? "N/A" : extractedPhonetic
+                    itemsToSave[index].definition = extractedDefinition.isEmpty ? "Definition not found." : extractedDefinition
+                    itemsToSave[index].dictionaryExample = extractedExample
+                }
+            } else {
+                await setFallbackDefinition(for: index)
+            }
+        } catch {
+            await setFallbackDefinition(for: index)
         }
     }
     
@@ -998,6 +1053,7 @@ struct SaveToCollectionView: View {
         await MainActor.run {
             itemsToSave[index].definition = "Definition not found."
             itemsToSave[index].pronunciation = "N/A"
+            itemsToSave[index].dictionaryExample = nil
         }
     }
     
@@ -1018,7 +1074,8 @@ struct SaveToCollectionView: View {
                 contextSentence: item.originalSentence,
                 translation: item.translatedSentence,
                 pronunciation: item.pronunciation,
-                definition: item.definition
+                definition: item.definition,
+                dictionaryExample: item.dictionaryExample
             )
             modelContext.insert(card)
             card.book = bookToUse
@@ -1040,6 +1097,12 @@ struct VocabItemRowView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text(item.word).font(.headline).foregroundColor(.accentColor)
+                Button {
+                    SpeechService.speak(word: item.word)
+                } label: {
+                    Image(systemName: "speaker.wave.2")
+                        .font(.headline)
+                }
                 if !item.pronunciation.isEmpty && item.pronunciation != "N/A" {
                     Text(item.pronunciation)
                         .font(.caption)
@@ -1064,6 +1127,15 @@ struct VocabItemRowView: View {
                 Text("Searching dictionary definition...").font(.caption).foregroundColor(.secondary)
             }
             VStack(alignment: .leading, spacing: 4) {
+                if let dictExample = item.dictionaryExample, !dictExample.isEmpty {
+                    HStack(spacing: 8) {
+                        Rectangle().fill(Color.orange.opacity(0.3)).frame(width: 2)
+                        Text(dictExample)
+                            .font(.footnote)
+                            .foregroundColor(.orange)
+                    }
+                    .padding(.leading, 4)
+                }
                 Text(item.originalSentence).font(.caption).italic().foregroundColor(.secondary)
                 if !item.translatedSentence.isEmpty && item.translatedSentence != "Translation unavailable" {
                     Text(item.translatedSentence).font(.caption).foregroundColor(.green)
@@ -1082,9 +1154,9 @@ struct PendingVocabItem: Identifiable {
     let originalSentence: String
     var pronunciation: String = ""
     var definition: String = ""
+    var dictionaryExample: String? = nil
     var translatedSentence: String = ""
 }
-
 // --------------------------------------------------
 // MARK: - Word Selection View Controller
 // --------------------------------------------------
