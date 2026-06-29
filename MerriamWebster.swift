@@ -28,52 +28,73 @@ struct MerriamWebster {
             return nil
         }
 
-        // If the first element is a string, it's a suggestion (word not found)
         if let suggestion = firstElement as? String {
             throw NSError(domain: "MW", code: 404, userInfo: [NSLocalizedDescriptionKey: "Did you mean \(suggestion)?"])
         }
 
-        // Now it must be a dictionary
         guard let entryDict = firstElement as? [String: Any] else { return nil }
 
         // Definition
         let shortDefs = entryDict["shortdef"] as? [String]
         let definition = shortDefs?.first ?? ""
 
-        // Example sentence – drill into "def" -> "sseq" -> sense -> "dt" with "vis"
         var example: String? = nil
+        print("[MW Debug] Starting example extraction")
         if let defs = entryDict["def"] as? [[String: Any]],
            let firstDef = defs.first,
            let sseq = firstDef["sseq"] as? [[Any]] {
+            print("[MW Debug] sseq count: \(sseq.count)")
             for senseArray in sseq {
                 for senseElement in senseArray {
-                    if let senseDict = senseElement as? [String: Any],
-                       let dtArray = senseDict["dt"] as? [[Any]],
-                       let dt = dtArray.first(where: { ($0.first as? String) == "vis" }) {
-                        // dt format: ["vis", ["{it}word", "Example sentence"]]
-                        if dt.count > 1, let examples = dt[1] as? [Any], let firstExample = examples.first as? String {
-                            example = firstExample
-                                .replacingOccurrences(of: "{it}", with: "")
-                                .replacingOccurrences(of: "{/it}", with: "")
-                                .replacingOccurrences(of: "{bc}", with: "")
-                                .replacingOccurrences(of: "{sc}", with: "")
-                                .replacingOccurrences(of: "{/sc}", with: "")
-                            break
+                    // senseElement can be:
+                    //   - a 2-element array ["sense", {dt: ...}] or ["sen", ...] or ["bs", ...]
+                    //   - directly a dictionary (less common)
+                    var senseDict: [String: Any]?
+                    if let arr = senseElement as? [Any], arr.count >= 2, let type = arr[0] as? String, type == "sense" || type == "sen" || type == "bs" {
+                        senseDict = arr[1] as? [String: Any]
+                    } else if let dict = senseElement as? [String: Any] {
+                        senseDict = dict
+                    }
+                    
+                    guard let senseDict = senseDict,
+                          let dtArray = senseDict["dt"] as? [[Any]] else { continue }
+                    
+                    print("[MW Debug] dtArray count: \(dtArray.count)")
+                    for dt in dtArray {
+                        if let first = dt.first as? String, first == "vis", dt.count > 1,
+                           let examples = dt[1] as? [Any], let firstObj = examples.first {
+                            print("[MW Debug] vis example type: \(type(of: firstObj)) value: \(firstObj)")
+                            if let s = firstObj as? String {
+                                example = s
+                            } else if let dict = firstObj as? NSDictionary, let t = dict["t"] as? String {
+                                example = t
+                            }
+                            break  // take first example from this vis
                         }
                     }
                 }
             }
+        } else {
+            print("[MW Debug] Could not extract def/sseq")
         }
-
+        
+        // Clean up all formatting tokens (e.g., {it}, {/it}, {phrase}, {/phrase}, {wi}, etc.)
+        if let ex = example {
+            if let regex = try? NSRegularExpression(pattern: "\\{[^}]+\\}", options: []) {
+                let range = NSRange(ex.startIndex..., in: ex)
+                example = regex.stringByReplacingMatches(in: ex, range: range, withTemplate: "")
+            }
+        }
+        print("[MW Example] parsed example = \(example ?? "nil")")
         // Pronunciation
         var pronunciation: String? = nil
         if let hwi = entryDict["hwi"] as? [String: Any],
            let prs = hwi["prs"] as? [[String: Any]],
            let mw = prs.first?["mw"] as? String {
-            pronunciation = mw   // e.g., "ˈhe-lō"
+            pronunciation = mw
         }
 
-        // Build audio URL from the first "prs" entry
+        // Build audio URL
         var audioURL: String? = nil
         if let hwi = entryDict["hwi"] as? [String: Any],
            let prs = hwi["prs"] as? [[String: Any]],
