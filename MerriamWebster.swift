@@ -7,7 +7,10 @@ struct MerriamWebster {
         let definition: String
         let example: String?
         let pronunciation: String?
-        let audioURL: String?        // remote audio file for perfect pronunciation
+        let audioURL: String?
+        let wordType: String?
+        let registerLabel: String?
+        let origin: String?
     }
 
     /// Fetch definition + example + pronunciation from Merriam‑Webster Learner's Dictionary
@@ -86,12 +89,28 @@ struct MerriamWebster {
             }
         }
         print("[MW Example] parsed example = \(example ?? "nil")")
-        // Pronunciation
+        // Word type, register, origin
+        let wordType = entryDict["fl"] as? String
+        let registerLabel = (entryDict["sls"] as? [String])?.first
+            ?? (entryDict["lbs"] as? [String])?.first
+        let origin: String? = {
+            guard let et = entryDict["et"] as? [[Any]] else { return nil }
+            for part in et {
+                if part.first as? String == "text", part.count > 1, let text = part[1] as? String {
+                    return text
+                }
+            }
+            return nil
+        }()
+        // Pronunciation (prefer mw, then ipa)
         var pronunciation: String? = nil
         if let hwi = entryDict["hwi"] as? [String: Any],
-           let prs = hwi["prs"] as? [[String: Any]],
-           let mw = prs.first?["mw"] as? String {
-            pronunciation = mw
+           let prs = hwi["prs"] as? [[String: Any]] {
+            if let mw = prs.first?["mw"] as? String {
+                pronunciation = mw
+            } else if let ipa = prs.first?["ipa"] as? String {
+                pronunciation = ipa
+            }
         }
 
         // Build audio URL
@@ -112,6 +131,14 @@ struct MerriamWebster {
             print("[MW Audio] No audio key found in response")
         }
 
-        return DefinitionResult(definition: definition, example: example, pronunciation: pronunciation, audioURL: audioURL)
+        return DefinitionResult(
+            definition: definition,
+            example: example,
+            pronunciation: pronunciation,
+            audioURL: audioURL,
+            wordType: wordType,
+            registerLabel: registerLabel,
+            origin: origin
+        )
     }
 }

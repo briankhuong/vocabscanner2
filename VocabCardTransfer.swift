@@ -6,6 +6,9 @@ struct VocabCardExport: Codable {
     var pronunciation: String?
     var definition: String?
     var dictionaryExample: String?
+    var wordType: String?
+    var registerLabel: String?
+    var origin: String?
     var pronunciationAudioURL: String?
     var contextSentence: String
     var translation: String
@@ -26,6 +29,9 @@ struct VocabCardExport: Codable {
         self.repetitions = card.repetitions
         self.nextReviewDate = card.nextReviewDate
         self.pronunciationAudioURL = card.pronunciationAudioURL
+        self.wordType = card.wordType
+        self.registerLabel = card.registerLabel
+        self.origin = card.origin
     }
 
     func toVocabCard() -> VocabCard {
@@ -36,7 +42,10 @@ struct VocabCardExport: Codable {
             pronunciation: pronunciation ?? "",
             definition: definition ?? "",
             dictionaryExample: dictionaryExample,
-            pronunciationAudioURL: pronunciationAudioURL
+            pronunciationAudioURL: pronunciationAudioURL,
+            wordType: wordType,
+            registerLabel: registerLabel,
+            origin: origin
         )
         card.easeFactor = easeFactor
         card.interval = interval

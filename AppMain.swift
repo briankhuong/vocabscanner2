@@ -53,6 +53,9 @@ final class VocabCard {
     var definition: String?
     var dictionaryExample: String? = nil
     var pronunciationAudioURL: String? = nil
+    var wordType: String? = nil
+    var registerLabel: String? = nil
+    var origin: String? = nil
     var contextSentence: String
     var translation: String
     
@@ -65,7 +68,7 @@ final class VocabCard {
     
     var sortOrder: Int = 0
     
-    init(word: String, contextSentence: String, translation: String = "", pronunciation: String = "", definition: String = "", dictionaryExample: String? = nil, pronunciationAudioURL: String? = nil) {
+    init(word: String, contextSentence: String, translation: String = "", pronunciation: String = "", definition: String = "", dictionaryExample: String? = nil, pronunciationAudioURL: String? = nil, wordType: String? = nil, registerLabel: String? = nil, origin: String? = nil) {
         self.word = word
         self.contextSentence = contextSentence
         self.translation = translation
@@ -74,6 +77,9 @@ final class VocabCard {
         self.dictionaryExample = dictionaryExample
         self.pronunciationAudioURL = pronunciationAudioURL
         self.nextReviewDate = Date()
+        self.wordType = wordType
+        self.registerLabel = registerLabel
+        self.origin = origin
     }
 }
 
@@ -295,28 +301,51 @@ struct BookDetailView: View {
                                 .cornerRadius(4)
                         }
                     }
-                    if let definition = card.definition, !definition.isEmpty, definition != "Definition not found." {
+                    
+                    // Definition
+                    if let def = card.definition, !def.isEmpty, def != "Definition not found." {
                         HStack(spacing: 8) {
                             Rectangle()
                                 .fill(Color.accentColor.opacity(0.4))
                                 .frame(width: 3)
-                            Text(definition)
+                            Text(def)
                                 .font(.subheadline)
                                 .foregroundColor(.primary)
                         }
                         .padding(.leading, 4)
                     }
-                    if let dictExample = card.dictionaryExample, !dictExample.isEmpty {
+                    
+                    // Extra dictionary info
+                    if let wt = card.wordType {
+                        Text(wt)
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                    }
+                    if let reg = card.registerLabel {
+                        Text(reg)
+                            .font(.caption)
+                            .foregroundColor(.purple)
+                    }
+                    if let orig = card.origin {
+                        Text("Origin: \(orig)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    // Dictionary example
+                    if let dictEx = card.dictionaryExample, !dictEx.isEmpty {
                         HStack(spacing: 8) {
                             Rectangle()
                                 .fill(Color.orange.opacity(0.4))
                                 .frame(width: 3)
-                            Text(dictExample)
+                            Text(dictEx)
                                 .font(.subheadline)
                                 .foregroundColor(.orange)
                         }
                         .padding(.leading, 4)
                     }
+                    
+                    // Context sentence
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Context Sentence:")
                             .font(.caption)
@@ -1029,6 +1058,15 @@ struct SaveToCollectionView: View {
                             itemsToSave[i].pronunciation = "N/A"
                         }
                         itemsToSave[i].pronunciationAudioURL = mwResult.audioURL
+                        itemsToSave[i].wordType = mwResult.wordType
+                        itemsToSave[i].registerLabel = mwResult.registerLabel
+                        itemsToSave[i].origin = mwResult.origin
+                        
+                        // Debug: verify extracted fields
+                        print("[MW Debug] wordType: \(mwResult.wordType ?? "nil")")
+                        print("[MW Debug] registerLabel: \(mwResult.registerLabel ?? "nil")")
+                        print("[MW Debug] origin: \(mwResult.origin ?? "nil")")
+                        print("[MW Debug] pronunciation (mw): \(mwResult.pronunciation ?? "nil")")
                     }
                     continue  // success, skip fallback
                 }
@@ -1130,7 +1168,10 @@ struct SaveToCollectionView: View {
                 pronunciation: item.pronunciation,
                 definition: item.definition,
                 dictionaryExample: item.dictionaryExample,
-                pronunciationAudioURL: item.pronunciationAudioURL
+                pronunciationAudioURL: item.pronunciationAudioURL,
+                wordType: item.wordType,
+                registerLabel: item.registerLabel,
+                origin: item.origin
             )
             modelContext.insert(card)
             card.book = bookToUse
@@ -1182,6 +1223,24 @@ struct VocabItemRowView: View {
             } else {
                 Text("Searching dictionary definition...").font(.caption).foregroundColor(.secondary)
             }
+            
+            // New dictionary info
+            if let wt = item.wordType {
+                Text(wt)
+                    .font(.caption)
+                    .foregroundColor(.blue)
+            }
+            if let reg = item.registerLabel {
+                Text(reg)
+                    .font(.caption)
+                    .foregroundColor(.purple)
+            }
+            if let orig = item.origin {
+                Text("Origin: \(orig)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
             VStack(alignment: .leading, spacing: 4) {
                 if let dictExample = item.dictionaryExample, !dictExample.isEmpty {
                     HStack(spacing: 8) {
@@ -1212,6 +1271,9 @@ struct PendingVocabItem: Identifiable {
     var definition: String = ""
     var dictionaryExample: String? = nil
     var pronunciationAudioURL: String? = nil
+    var wordType: String? = nil
+    var registerLabel: String? = nil
+    var origin: String? = nil
     var translatedSentence: String = ""
 }
 // --------------------------------------------------
