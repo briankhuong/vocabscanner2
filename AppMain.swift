@@ -436,6 +436,7 @@ struct SettingsView: View {
     @AppStorage("notificationMinute") private var notificationMinute = 0
     @AppStorage("notificationsEnabled") private var notificationsEnabled = false
     @AppStorage("learningStyle") private var learningStyle = LearningStyle.definitionFirst.rawValue
+    @AppStorage("hintSource") private var hintSource = "dictionary"
 
     @State private var showTimePicker = false
 
@@ -524,6 +525,27 @@ struct SettingsView: View {
                     }
                 } header: {
                     Label("Learning Style", systemImage: "brain.head.profile")
+                }
+
+                // MARK: - Hint Source
+                Section {
+                    Picker("Hint Source", selection: $hintSource) {
+                        Text("Dictionary Example").tag("dictionary")
+                        Text("Book Sentence (blanked)").tag("book")
+                    }
+                    .pickerStyle(.menu)
+
+                    if hintSource == "dictionary" {
+                        Text("The dictionary's example sentence will be shown during review (if available).")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("The book's sentence with the word blanked will be shown as the hint.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                } header: {
+                    Label("Hint", systemImage: "lightbulb")
                 }
             }
             .navigationTitle("Settings")

@@ -6,6 +6,7 @@ struct ReviewSessionView: View {
     @Query(sort: \VocabCard.nextReviewDate) private var allCards: [VocabCard]
     @AppStorage("maxDailyReviews") private var maxDailyReviews = 20
     @AppStorage("learningStyle") private var learningStyle = LearningStyle.definitionFirst.rawValue
+    @AppStorage("hintSource") private var hintSource = "dictionary"
     @State private var currentCardIndex = 0
     @State private var step: Step = .definition
     @State private var sessionCompleted = false
@@ -98,13 +99,29 @@ struct ReviewSessionView: View {
 
                             case .hint:
                                 VStack(spacing: 16) {
-                                    Text("Hint: Example Sentence")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                    Text(blankSentence(card.contextSentence, word: card.word))
-                                        .font(.title2)
-                                        .multilineTextAlignment(.center)
-                                        .padding(.horizontal)
+                                    // Choose hint content based on setting and availability
+                                    if hintSource == "dictionary",
+                                       let dictExample = card.dictionaryExample,
+                                       !dictExample.isEmpty {
+                                        // Show dictionary example verbatim
+                                        Text("Dictionary Example")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        Text(dictExample)
+                                            .font(.title3)
+                                            .foregroundColor(.orange)
+                                            .multilineTextAlignment(.center)
+                                            .padding(.horizontal)
+                                    } else {
+                                        // Fallback to blanked book sentence
+                                        Text("Hint: Example Sentence")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        Text(blankSentence(card.contextSentence, word: card.word))
+                                            .font(.title2)
+                                            .multilineTextAlignment(.center)
+                                            .padding(.horizontal)
+                                    }
                                     Button("Show Answer") {
                                         withAnimation { step = .answer }
                                     }
