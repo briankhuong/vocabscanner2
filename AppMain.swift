@@ -46,8 +46,32 @@ final class Book {
     }
 }
 
+enum DictionaryMode: String, CaseIterable, Identifiable {
+    case bestMatch
+    case allSenses
+    
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .bestMatch: return "Best Match (Contextual)"
+        case .allSenses: return "Multiple Senses"
+        }
+    }
+}
+
+struct DictionarySense: Codable, Identifiable, Hashable {
+    var id = UUID()
+    var definition: String
+    var example: String?
+    var wordType: String?
+    var registerLabel: String?
+    var pronunciationAudioURL: String?
+    var isBestMatch: Bool = false
+}
+
 @Model
 final class VocabCard {
+
     var word: String
     var pronunciation: String?
     var definition: String?
@@ -67,6 +91,9 @@ final class VocabCard {
     var book: Book?
     
     var sortOrder: Int = 0
+    
+    var senses: [DictionarySense]? = nil
+
     
     init(word: String, contextSentence: String, translation: String = "", pronunciation: String = "", definition: String = "", dictionaryExample: String? = nil, pronunciationAudioURL: String? = nil, wordType: String? = nil, registerLabel: String? = nil, origin: String? = nil) {
         self.word = word
@@ -308,29 +335,9 @@ struct BookDetailView: View {
                     }
                     
                     // Definition
-                    if let def = card.definition, !def.isEmpty, def != "Definition not found." {
-                        HStack(spacing: 8) {
-                            Rectangle()
-                                .fill(Color.accentColor.opacity(0.4))
-                                .frame(width: 3)
-                            Text(def)
-                                .font(.subheadline)
-                                .foregroundColor(.primary)
-                            Spacer()
-                            Button {
-                                print("[TTS] Speak definition")
-                                SpeechService.speak(text: def)
-                            } label: {
-                                Image(systemName: "speaker.wave.2")
-                                    .font(.caption)
-                                    .frame(width: 28, height: 28)
-                                    .background(Color.gray.opacity(0.15))
-                                    .clipShape(Circle())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.leading, 4)
-                    }
+                    // 👇 NEW: Replaced the old definition views with the new paging component
+                    MultiSensePagingView(card: card)
+
                     
                     // Extra dictionary info
                     if let wt = card.wordType {
@@ -495,8 +502,9 @@ struct SettingsView: View {
     @AppStorage("notificationsEnabled") private var notificationsEnabled = false
     @AppStorage("learningStyle") private var learningStyle = LearningStyle.definitionFirst.rawValue
     @AppStorage("hintSource") private var hintSource = "dictionary"
-
+    @AppStorage("dictionaryMode") private var dictionaryMode = DictionaryMode.bestMatch.rawValue
     @State private var showTimePicker = false
+
 
     var body: some View {
         NavigationStack {
@@ -605,8 +613,29 @@ struct SettingsView: View {
                 } header: {
                     Label("Hint", systemImage: "lightbulb")
                 }
+                
+                // MARK: - Dictionary Mode
+                Section {
+                    Picker("Dictionary Mode", selection: $dictionaryMode) {
+                        ForEach(DictionaryMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode.rawValue)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    
+                    if dictionaryMode == DictionaryMode.bestMatch.rawValue {
+                        Text("Automatically shows the definition that best matches your book's sentence on the first page.")
+                            .font(.caption).foregroundColor(.secondary)
+                    } else {
+                        Text("Shows multiple dictionary meanings in standard order. You can swipe through them.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                } header: {
+                    Label("Dictionary", systemImage: "text.book.closed")
+                }
             }
             .navigationTitle("Settings")
+
         }
         .onAppear {
             // Schedule notification if already enabled (e.g., after app restart)
@@ -1006,6 +1035,8 @@ struct SaveToCollectionView: View {
     @State private var selectedBook: Book? = nil
     @State private var newBookTitle = ""
     @State private var isCreatingNewBook = false
+    @AppStorage("dictionaryMode") private var dictionaryMode = DictionaryMode.bestMatch.rawValue
+
     
     var body: some View {
         NavigationStack {
@@ -1077,25 +1108,31 @@ struct SaveToCollectionView: View {
             // Try Merriam‑Webster first
             do {
                 if let mwResult = try await MerriamWebster.lookup(word: word),
-                   !mwResult.definition.isEmpty {
+                   !mwResult.senses.isEmpty { // 👈 Check if senses is empty instead of definition
+                    
+                    let rankedSenses = rankSenses(mwResult.senses, contextSentence: itemsToSave[i].originalSentence, word: word, mode: dictionaryMode)
                     await MainActor.run {
-                        itemsToSave[i].definition = mwResult.definition
-                        itemsToSave[i].dictionaryExample = mwResult.example
+                        // 1. Store ALL senses for the new multi-page UI
+                        itemsToSave[i].senses = rankedSenses
+                        
+                        // 2. Map the "Best Match" (the first sense) to the legacy fields for backwards compatibility
+                        if let bestSense = rankedSenses.first {
+                            itemsToSave[i].definition = bestSense.definition
+                            itemsToSave[i].dictionaryExample = bestSense.example
+                            itemsToSave[i].wordType = bestSense.wordType
+                            itemsToSave[i].registerLabel = bestSense.registerLabel
+                            itemsToSave[i].pronunciationAudioURL = bestSense.pronunciationAudioURL
+                        }
+                        
+                        // 3. Map global properties (these still apply to the whole word)
                         if let pron = mwResult.pronunciation {
                             itemsToSave[i].pronunciation = pron
                         } else {
                             itemsToSave[i].pronunciation = "N/A"
                         }
-                        itemsToSave[i].pronunciationAudioURL = mwResult.audioURL
-                        itemsToSave[i].wordType = mwResult.wordType
-                        itemsToSave[i].registerLabel = mwResult.registerLabel
                         itemsToSave[i].origin = mwResult.origin
                         
-                        // Debug: verify extracted fields
-                        print("[MW Debug] wordType: \(mwResult.wordType ?? "nil")")
-                        print("[MW Debug] registerLabel: \(mwResult.registerLabel ?? "nil")")
-                        print("[MW Debug] origin: \(mwResult.origin ?? "nil")")
-                        print("[MW Debug] pronunciation (mw): \(mwResult.pronunciation ?? "nil")")
+                        print("[MW Debug] Successfully parsed and ranked \(rankedSenses.count) senses.")
                     }
                     continue  // success, skip fallback
                 }
@@ -1107,7 +1144,83 @@ struct SaveToCollectionView: View {
             await lookupFreeDictionary(for: i)
         }
     }
-    
+    private func rankSenses(_ senses: [DictionarySense], contextSentence: String, word: String, mode: String) -> [DictionarySense] {
+        guard !senses.isEmpty else { return [] }
+        
+        if mode == DictionaryMode.allSenses.rawValue {
+            var ordered = senses
+            ordered[0].isBestMatch = true
+            return ordered
+        }
+        
+        let cleanContext = contextSentence.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // 1. 🌟 DETECT PART OF SPEECH (Using Apple's Neural NLTagger)
+        var contextWordIsNoun = true // Default fallback
+        let tagger = NLTagger(tagSchemes: [.lexicalClass])
+        tagger.string = contextSentence
+        
+        // 👇 FIX 2: Replaced `item.word` with `word`
+        let range = contextSentence.range(of: word, options: .caseInsensitive) ?? contextSentence.startIndex..<contextSentence.endIndex
+        let (tag, _) = tagger.tag(at: range.lowerBound, unit: .word, scheme: .lexicalClass)
+        
+        
+        // 2. Score Senses
+        let stopWords: Set<String> = [
+            "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
+            "by", "as", "is", "are", "was", "were", "be", "been", "being", "it", "this", "that",
+            "he", "she", "they", "we", "i", "you", "his", "her", "their", "my", "your", "has",
+            "have", "had", "do", "does", "did", "out", "from", "up", "down", "which", "who", "whom"
+        ]
+        
+        let contextWords = Set(cleanContext
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty && !stopWords.contains($0) })
+        
+        let embedding = NLEmbedding.sentenceEmbedding(for: .english)
+        
+        var scoredSenses = senses.map { sense -> (DictionarySense, Double) in
+            let combinedText = "\(sense.definition) \(sense.example ?? "")".lowercased()
+            let senseWords = Set(combinedText
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { !$0.isEmpty && !stopWords.contains($0) })
+            
+            // Calculate Exact Keyword Overlap
+            let overlapCount = Double(contextWords.intersection(senseWords).count)
+            
+            var finalScore: Double = 0.0
+            
+            // Get Semantic Distance
+            if let emb = embedding {
+                let distance = emb.distance(between: cleanContext, and: combinedText)
+                finalScore = distance - (overlapCount * 0.15)
+            } else {
+                finalScore = -(overlapCount)
+            }
+            
+            // 3. 👈 CRITICAL POS PENALTY:
+            // If the dictionary sense doesn't match the part of speech we detected, penalize it heavily!
+            if let type = sense.wordType?.lowercased() {
+                if contextWordIsNoun && type.contains("verb") {
+                    finalScore += 1.5 // Adds a heavy penalty to keep verbs out of noun contexts
+                } else if !contextWordIsNoun && type.contains("noun") {
+                    finalScore += 1.5 // Adds a heavy penalty to keep nouns out of verb contexts
+                }
+            }
+            
+            return (sense, finalScore)
+        }
+        
+        // Sort by the lowest overall score (lowest distance/penalty wins!)
+        scoredSenses.sort { $0.1 < $1.1 }
+        
+        var sortedSenses = scoredSenses.map { $0.0 }
+        sortedSenses[0].isBestMatch = true
+        
+        return sortedSenses
+    }
+
+
     private func lookupFreeDictionary(for index: Int) async {
         let word = itemsToSave[index].word.lowercased().trimmingCharacters(in: .punctuationCharacters)
         guard let encodedWord = word.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
@@ -1219,8 +1332,11 @@ struct SaveToCollectionView: View {
 
 struct VocabItemRowView: View {
     @Binding var item: PendingVocabItem
+    @State private var currentPage = 0 // Tracks which sense we are currently viewing
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            // 1. Header Row (Word + Pronunciation + Translated Status)
             HStack(alignment: .firstTextBaseline) {
                 Text(item.word).font(.headline).foregroundColor(.accentColor)
                 Button {
@@ -1234,6 +1350,7 @@ struct VocabItemRowView: View {
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
+                
                 if !item.pronunciation.isEmpty && item.pronunciation != "N/A" {
                     Text(item.pronunciation)
                         .font(.caption)
@@ -1241,85 +1358,247 @@ struct VocabItemRowView: View {
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Color.secondary.opacity(0.1)).cornerRadius(4)
                 }
+                
                 Spacer()
+                
                 if item.translatedSentence.isEmpty {
                     ProgressView()
                 } else if item.translatedSentence != "Translation unavailable" {
                     Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
                 }
             }
-            if !item.definition.isEmpty {
-                HStack(spacing: 8) {
-                    Rectangle().fill(Color.accentColor.opacity(0.3)).frame(width: 2)
-                    Text(item.definition).font(.footnote).foregroundColor(.primary)
-                    Spacer()
-                    Button {
-                        print("[Audio] Definition speaker tapped (save sheet)")
-                        SpeechService.speak(text: item.definition)
-                    } label: {
-                        Image(systemName: "speaker.wave.2")
-                            .font(.caption)
-                            .frame(width: 28, height: 28)
-                            .background(Color.gray.opacity(0.1))
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.leading, 4)
-            } else {
-                Text("Searching dictionary definition...").font(.caption).foregroundColor(.secondary)
-            }
             
-            // New dictionary info
-            if let wt = item.wordType {
-                Text(wt)
-                    .font(.caption)
-                    .foregroundColor(.blue)
-            }
-            if let reg = item.registerLabel {
-                Text(reg)
-                    .font(.caption)
-                    .foregroundColor(.purple)
-            }
+            // Global Word Info (Origin)
             if let orig = item.origin {
                 Text("Origin: \(orig)")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
             
-            VStack(alignment: .leading, spacing: 4) {
-                if let dictExample = item.dictionaryExample, !dictExample.isEmpty {
-                    HStack(spacing: 8) {
-                        Rectangle().fill(Color.orange.opacity(0.3)).frame(width: 2)
-                        Text(dictExample)
-                            .font(.footnote)
-                            .foregroundColor(.orange)
-                        Spacer()
-                        Button {
-                            print("[Audio] Dictionary example speaker tapped (save sheet)")
-                            SpeechService.speak(text: dictExample)
-                        } label: {
-                            Image(systemName: "speaker.wave.2")
-                                .font(.caption)
-                                .frame(width: 28, height: 28)
-                                .background(Color.gray.opacity(0.1))
-                                .clipShape(Circle())
+            // 2. MULTI-SENSE DICTIONARY UI 👈
+            if !item.senses.isEmpty {
+                if item.senses.indices.contains(currentPage) {
+                    let sense = item.senses[currentPage]
+                    
+                    VStack(alignment: .leading, spacing: 8) {
+                        // Best Match Badge (Only on Page 1)
+                        if currentPage == 0 && sense.isBestMatch {
+                            Text("✨ Best Match")
+                                .font(.caption2).fontWeight(.bold)
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .background(Color.yellow.opacity(0.3))
+                                .foregroundColor(.orange)
+                                .cornerRadius(8)
                         }
-                        .buttonStyle(.plain)
+                        
+                        HStack {
+                            if let wt = sense.wordType {
+                                Text(wt).font(.caption).foregroundColor(.blue)
+                            }
+                            if let reg = sense.registerLabel {
+                                Text(reg).font(.caption).foregroundColor(.purple)
+                            }
+                        }
+                        
+                        // Definition
+                        HStack(alignment: .top) {
+                            Rectangle().fill(Color.accentColor.opacity(0.4)).frame(width: 3)
+                            Text(sense.definition)
+                                .font(.subheadline)
+                                .foregroundColor(.primary)
+                                .fixedSize(horizontal: false, vertical: true) // Prevents layout stretching
+                        }
+                        
+                        // Example
+                        if let dictExample = sense.example, !dictExample.isEmpty {
+                            HStack(alignment: .top) {
+                                Rectangle().fill(Color.orange.opacity(0.4)).frame(width: 3)
+                                Text(dictExample)
+                                    .font(.footnote)
+                                    .foregroundColor(.orange)
+                                    .fixedSize(horizontal: false, vertical: true) // Prevents layout stretching
+                                Spacer()
+                                Button {
+                                    print("[Audio] Dictionary example speaker tapped")
+                                    SpeechService.speak(text: dictExample)
+                                } label: {
+                                    Image(systemName: "speaker.wave.2")
+                                        .font(.caption)
+                                        .frame(width: 28, height: 28)
+                                        .background(Color.gray.opacity(0.1))
+                                        .clipShape(Circle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
                     }
                     .padding(.leading, 4)
+                    .id(currentPage) // Forces immediate view swap to lock card height
                 }
-                Text(item.originalSentence).font(.caption).italic().foregroundColor(.secondary)
+                
+                // 3. NAVIGATION PILL (Only shows if there are multiple alternative senses)
+                if item.senses.count > 1 {
+                    HStack {
+                        Spacer()
+                        HStack(spacing: 16) {
+                            Button(action: {
+                                if currentPage > 0 { currentPage -= 1 }
+                            }) {
+                                Image(systemName: "chevron.left")
+                                    .foregroundColor(currentPage > 0 ? .primary : .secondary.opacity(0.5))
+                                    .padding(.horizontal, 8)
+                                    .contentShape(Rectangle()) // Easier hit target
+                            }
+                            .buttonStyle(.plain) // Prevents SwiftUI row button conflicts
+                            
+                            Text("\(currentPage + 1) / \(item.senses.count)")
+                                .font(.caption).fontWeight(.medium).monospacedDigit()
+                            
+                            Button(action: {
+                                if currentPage < item.senses.count - 1 { currentPage += 1 }
+                            }) {
+                                Image(systemName: "chevron.right")
+                                    .foregroundColor(currentPage < item.senses.count - 1 ? .primary : .secondary.opacity(0.5))
+                                    .padding(.horizontal, 8)
+                                    .contentShape(Rectangle()) // Easier hit target
+                            }
+                            .buttonStyle(.plain) // Prevents SwiftUI row button conflicts
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 6)
+                        .background(Color.secondary.opacity(0.1))
+                        .clipShape(Capsule())
+                        Spacer()
+                    }
+                    .padding(.top, 4)
+                }
+                
+            } else if !item.definition.isEmpty {
+                // Fallback for single-definition legacy loading
+                HStack(spacing: 8) {
+                    Rectangle().fill(Color.accentColor.opacity(0.4)).frame(width: 2)
+                    Text(item.definition).font(.subheadline).foregroundColor(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }.padding(.leading, 4)
+            } else {
+                Text("Searching dictionary definition...").font(.caption).foregroundColor(.secondary)
+            }
+            
+            // 4. Context Sentence & Translation
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.originalSentence)
+                    .font(.caption).italic().foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                
                 if !item.translatedSentence.isEmpty && item.translatedSentence != "Translation unavailable" {
                     Text(item.translatedSentence).font(.caption).foregroundColor(.green)
+                        .fixedSize(horizontal: false, vertical: true)
                 } else if item.translatedSentence == "Translation unavailable" {
                     Text(item.translatedSentence).font(.caption).foregroundColor(.red)
                 }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
     }
 }
+
+// MARK: - Multi-Sense Paging View
+struct MultiSensePagingView: View {
+    let card: VocabCard // Using the final VocabCard model
+    @State private var currentPage = 0
+
+    var body: some View {
+        // Ensure we have senses to display
+        if let senses = card.senses, !senses.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                // Dynamic Height Content (No TabView)
+                if senses.indices.contains(currentPage) {
+                    let sense = senses[currentPage]
+                    
+                    VStack(alignment: .leading, spacing: 10) {
+                        // PAGE 1 EXCLUSIVES
+                        if currentPage == 0 {
+                            if sense.isBestMatch {
+                                Text("✨ Best Match")
+                                    .font(.caption2).fontWeight(.bold)
+                                    .padding(.horizontal, 8).padding(.vertical, 4)
+                                    .background(Color.yellow.opacity(0.3))
+                                    .foregroundColor(.orange)
+                                    .cornerRadius(8)
+                            }
+                            
+                            VStack(alignment: .leading, spacing: 4) {
+                                 Text(card.contextSentence).font(.callout).italic().foregroundColor(.secondary)
+                                 if !card.translation.isEmpty { Text(card.translation).font(.caption).foregroundColor(.green) }
+                            }
+                            .padding(.bottom, 8)
+                        }
+                        
+                        // DICTIONARY CONTENT (All Pages)
+                        if let wt = sense.wordType {
+                            Text(wt).font(.caption).foregroundColor(.blue)
+                        }
+                        
+                        HStack(alignment: .top) {
+                            Rectangle().fill(Color.accentColor.opacity(0.4)).frame(width: 3)
+                            Text(sense.definition).font(.subheadline)
+                        }
+                        
+                        if let ex = sense.example {
+                            HStack(alignment: .top) {
+                                Rectangle().fill(Color.orange.opacity(0.4)).frame(width: 3)
+                                Text(ex).font(.footnote).foregroundColor(.orange)
+                                Spacer()
+                                Button {
+                                     SpeechService.speak(text: ex)
+                                } label: {
+                                    Image(systemName: "speaker.wave.2").font(.caption)
+                                        .frame(width: 28, height: 28)
+                                        .background(Color.gray.opacity(0.1)).clipShape(Circle())
+                                }.buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                    .transition(.opacity) // Smooth fade when clicking arrows
+                }
+                
+                // NAVIGATION PILL
+                if senses.count > 1 {
+                    HStack {
+                        Spacer()
+                        HStack(spacing: 16) {
+                            Button(action: { if currentPage > 0 { withAnimation { currentPage -= 1 } } }) {
+                                Image(systemName: "chevron.left").foregroundColor(currentPage > 0 ? .primary : .secondary.opacity(0.5))
+                            }
+                            
+                            Text("\(currentPage + 1) / \(senses.count)")
+                                .font(.caption).fontWeight(.medium).monospacedDigit()
+                            
+                            Button(action: { if currentPage < senses.count - 1 { withAnimation { currentPage += 1 } } }) {
+                                Image(systemName: "chevron.right").foregroundColor(currentPage < senses.count - 1 ? .primary : .secondary.opacity(0.5))
+                            }
+                        }
+                        .padding(.horizontal, 16).padding(.vertical, 8)
+                        .background(Color.secondary.opacity(0.15))
+                        .clipShape(Capsule())
+                        Spacer()
+                    }
+                }
+            }
+        } else {
+            // Fallback for older cards or if senses are missing
+            VStack(alignment: .leading, spacing: 4) {
+                if let def = card.definition {
+                    Text(def).font(.subheadline)
+                }
+                if let ex = card.dictionaryExample {
+                    Text(ex).font(.footnote).italic().foregroundColor(.secondary)
+                }
+            }
+        }
+    }
+}
+
 
 struct PendingVocabItem: Identifiable {
     let id = UUID()
@@ -1333,7 +1612,9 @@ struct PendingVocabItem: Identifiable {
     var registerLabel: String? = nil
     var origin: String? = nil
     var translatedSentence: String = ""
+    var senses: [DictionarySense] = []
 }
+
 // --------------------------------------------------
 // MARK: - Word Selection View Controller
 // --------------------------------------------------

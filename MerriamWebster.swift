@@ -2,99 +2,42 @@ import Foundation
 
 struct MerriamWebster {
     static let apiKey = "02a65e0d-aeb8-4576-972c-58d0fb4ea245"   // ← put your real key here
-
+    
+    // 👇 Updated to return multiple senses and global word properties
     struct DefinitionResult {
-        let definition: String
-        let example: String?
-        let pronunciation: String?
-        let audioURL: String?
-        let wordType: String?
-        let registerLabel: String?
-        let origin: String?
+        let senses: [DictionarySense] // Contains multiple definitions, examples, wordTypes, etc.
+        let pronunciation: String?    // Phonetic text applies to the whole word
+        let origin: String?           // Origin applies to the whole word
     }
-
-    /// Fetch definition + example + pronunciation from Merriam‑Webster Learner's Dictionary
+    
+    /// Fetch definitions + examples + pronunciation from Merriam‑Webster Learner's Dictionary
+    /// Fetch definitions + examples + pronunciation from Merriam‑Webster Learner's Dictionary
     static func lookup(word: String) async throws -> DefinitionResult? {
         let trimmed = word.lowercased().trimmingCharacters(in: .punctuationCharacters)
         guard let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
               let url = URL(string: "https://www.dictionaryapi.com/api/v3/references/learners/json/\(encoded)?key=\(apiKey)") else {
             return nil
         }
-
         let (data, response) = try await URLSession.shared.data(from: url)
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             return nil
         }
-
         guard let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [Any],
-              let firstElement = jsonArray.first else {
+              !jsonArray.isEmpty else {
             return nil
         }
-
-        if let suggestion = firstElement as? String {
+        
+        // If MW returns strings, it means the word was not found and it's offering spelling suggestions
+        if let suggestion = jsonArray.first as? String {
             throw NSError(domain: "MW", code: 404, userInfo: [NSLocalizedDescriptionKey: "Did you mean \(suggestion)?"])
         }
-
-        guard let entryDict = firstElement as? [String: Any] else { return nil }
-
-        // Definition
-        let shortDefs = entryDict["shortdef"] as? [String]
-        let definition = shortDefs?.first ?? ""
-
-        var example: String? = nil
-        print("[MW Debug] Starting example extraction")
-        if let defs = entryDict["def"] as? [[String: Any]],
-           let firstDef = defs.first,
-           let sseq = firstDef["sseq"] as? [[Any]] {
-            print("[MW Debug] sseq count: \(sseq.count)")
-            for senseArray in sseq {
-                for senseElement in senseArray {
-                    // senseElement can be:
-                    //   - a 2-element array ["sense", {dt: ...}] or ["sen", ...] or ["bs", ...]
-                    //   - directly a dictionary (less common)
-                    var senseDict: [String: Any]?
-                    if let arr = senseElement as? [Any], arr.count >= 2, let type = arr[0] as? String, type == "sense" || type == "sen" || type == "bs" {
-                        senseDict = arr[1] as? [String: Any]
-                    } else if let dict = senseElement as? [String: Any] {
-                        senseDict = dict
-                    }
-                    
-                    guard let senseDict = senseDict,
-                          let dtArray = senseDict["dt"] as? [[Any]] else { continue }
-                    
-                    print("[MW Debug] dtArray count: \(dtArray.count)")
-                    for dt in dtArray {
-                        if let first = dt.first as? String, first == "vis", dt.count > 1,
-                           let examples = dt[1] as? [Any], let firstObj = examples.first {
-                            print("[MW Debug] vis example type: \(type(of: firstObj)) value: \(firstObj)")
-                            if let s = firstObj as? String {
-                                example = s
-                            } else if let dict = firstObj as? NSDictionary, let t = dict["t"] as? String {
-                                example = t
-                            }
-                            break  // take first example from this vis
-                        }
-                    }
-                }
-            }
-        } else {
-            print("[MW Debug] Could not extract def/sseq")
-        }
         
-        // Clean up all formatting tokens (e.g., {it}, {/it}, {phrase}, {/phrase}, {wi}, etc.)
-        if let ex = example {
-            if let regex = try? NSRegularExpression(pattern: "\\{[^}]+\\}", options: []) {
-                let range = NSRange(ex.startIndex..., in: ex)
-                example = regex.stringByReplacingMatches(in: ex, range: range, withTemplate: "")
-            }
-        }
-        print("[MW Example] parsed example = \(example ?? "nil")")
-        // Word type, register, origin
-        let wordType = entryDict["fl"] as? String
-        let registerLabel = (entryDict["sls"] as? [String])?.first
-            ?? (entryDict["lbs"] as? [String])?.first
+        // Use the first entry just for global word properties (Origin & Pronunciation)
+        guard let firstEntryDict = jsonArray.first as? [String: Any] else { return nil }
+        
+        // 1. Extract Word-level properties (Origin)
         let origin: String? = {
-            guard let et = entryDict["et"] as? [[Any]] else { return nil }
+            guard let et = firstEntryDict["et"] as? [[Any]] else { return nil }
             for part in et {
                 if part.first as? String == "text", part.count > 1, let text = part[1] as? String {
                     return text
@@ -102,43 +45,112 @@ struct MerriamWebster {
             }
             return nil
         }()
-        // Pronunciation (prefer mw, then ipa)
+        
+        // 2. Pronunciation & Audio URL
         var pronunciation: String? = nil
-        if let hwi = entryDict["hwi"] as? [String: Any],
-           let prs = hwi["prs"] as? [[String: Any]] {
-            if let mw = prs.first?["mw"] as? String {
-                pronunciation = mw
-            } else if let ipa = prs.first?["ipa"] as? String {
-                pronunciation = ipa
+        var audioURL: String? = nil
+        if let hwi = firstEntryDict["hwi"] as? [String: Any], let prs = hwi["prs"] as? [[String: Any]] {
+            pronunciation = (prs.first?["mw"] as? String) ?? (prs.first?["ipa"] as? String)
+            if let sound = prs.first?["sound"] as? [String: Any], let audioKey = sound["audio"] as? String {
+                let subdir: String
+                let lowerKey = audioKey.lowercased()
+                if lowerKey.hasPrefix("bix") { subdir = "bix" }
+                else if lowerKey.hasPrefix("gg") { subdir = "gg" }
+                else if let firstChar = lowerKey.first, firstChar.isNumber { subdir = "number" }
+                else { subdir = String(lowerKey.prefix(1)) }
+                audioURL = "https://media.merriam-webster.com/soundc11/\(subdir)/\(audioKey).wav"
             }
         }
-
-        // Build audio URL
-        var audioURL: String? = nil
-        if let hwi = entryDict["hwi"] as? [String: Any],
-           let prs = hwi["prs"] as? [[String: Any]],
-           let sound = prs.first?["sound"] as? [String: Any],
-           let audioKey = sound["audio"] as? String {
-            let subdir: String
-            let lowerKey = audioKey.lowercased()
-            if lowerKey.hasPrefix("bix") { subdir = "bix" }
-            else if lowerKey.hasPrefix("gg") { subdir = "gg" }
-            else if let firstChar = lowerKey.first, firstChar.isNumber { subdir = "number" }
-            else { subdir = String(lowerKey.prefix(1)) }
-            audioURL = "https://media.merriam-webster.com/soundc11/\(subdir)/\(audioKey).wav"
-            print("[MW Audio] key=\(audioKey) -> URL=\(audioURL ?? "nil")")
-        } else {
-            print("[MW Audio] No audio key found in response")
+        
+        // 3. Extract multiple Senses (Loop through multiple Homographs in jsonArray!)
+        var extractedSenses: [DictionarySense] = []
+        
+        for element in jsonArray {
+            guard let entryDict = element as? [String: Any] else { continue }
+            let wordType = entryDict["fl"] as? String
+            
+            if let defs = entryDict["def"] as? [[String: Any]] {
+                for firstDef in defs {
+                    guard let sseq = firstDef["sseq"] as? [[Any]] else { continue }
+                    
+                    for senseArray in sseq {
+                        var currentDef = ""
+                        var currentExample: String? = nil
+                        var registerLabel: String? = nil
+                        
+                        for senseElement in senseArray {
+                            var senseDict: [String: Any]?
+                            if let arr = senseElement as? [Any], arr.count >= 2, let type = arr[0] as? String, type == "sense" || type == "sen" || type == "bs" {
+                                senseDict = arr[1] as? [String: Any]
+                            } else if let dict = senseElement as? [String: Any] {
+                                senseDict = dict
+                            }
+                            
+                            guard let senseData = senseDict, let dtArray = senseData["dt"] as? [[Any]] else { continue }
+                            
+                            registerLabel = (senseData["sls"] as? [String])?.first
+                            
+                            for dt in dtArray {
+                                guard let first = dt.first as? String, dt.count > 1 else { continue }
+                                
+                                if first == "text", let defText = dt[1] as? String {
+                                    currentDef = defText
+                                }
+                                
+                                if first == "vis", let examples = dt[1] as? [Any], let firstObj = examples.first {
+                                    if let s = firstObj as? String { currentExample = s }
+                                    else if let dict = firstObj as? NSDictionary, let t = dict["t"] as? String { currentExample = t }
+                                }
+                            }
+                        }
+                        
+                        // Clean up tags
+                        if let regex = try? NSRegularExpression(pattern: "\\{[^}]+\\}", options: []) {
+                            let defRange = NSRange(currentDef.startIndex..., in: currentDef)
+                            currentDef = regex.stringByReplacingMatches(in: currentDef, range: defRange, withTemplate: "").trimmingCharacters(in: .whitespaces)
+                            
+                            if let ex = currentExample {
+                                let exRange = NSRange(ex.startIndex..., in: ex)
+                                currentExample = regex.stringByReplacingMatches(in: ex, range: exRange, withTemplate: "").trimmingCharacters(in: .whitespaces)
+                            }
+                        }
+                        
+                        if !currentDef.isEmpty && extractedSenses.count < 6 {
+                            extractedSenses.append(DictionarySense(
+                                definition: currentDef,
+                                example: currentExample,
+                                wordType: wordType,
+                                registerLabel: registerLabel,
+                                pronunciationAudioURL: audioURL
+                            ))
+                        }
+                    }
+                }
+            }
+            
+            // Stop parsing if we have gathered plenty of senses
+            if extractedSenses.count >= 6 { break }
         }
-
+        
+        // Fallback
+        if extractedSenses.isEmpty, let shortDefs = firstEntryDict["shortdef"] as? [String] {
+            let fallbackWordType = firstEntryDict["fl"] as? String
+            for shortDef in shortDefs.prefix(3) {
+                extractedSenses.append(DictionarySense(
+                    definition: shortDef,
+                    example: nil,
+                    wordType: fallbackWordType,
+                    registerLabel: nil,
+                    pronunciationAudioURL: audioURL
+                ))
+            }
+        }
+        
         return DefinitionResult(
-            definition: definition,
-            example: example,
+            senses: extractedSenses,
             pronunciation: pronunciation,
-            audioURL: audioURL,
-            wordType: wordType,
-            registerLabel: registerLabel,
             origin: origin
         )
     }
+
 }
