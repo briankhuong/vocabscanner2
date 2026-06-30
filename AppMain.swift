@@ -1004,10 +1004,10 @@ struct WordSelectionView: UIViewControllerRepresentable {
 class WordBoxView: UIView {
     let detectedWord: DetectedWord
     var isSelectedWord: Bool = false {
-        didSet {
-            backgroundColor = isSelectedWord ? UIColor.yellow.withAlphaComponent(0.4) : UIColor.clear
-            layer.borderColor = isSelectedWord ? UIColor.yellow.cgColor : UIColor.gray.withAlphaComponent(0.3).cgColor
-        }
+        didSet { updateAppearance() }
+    }
+    var isPhrase: Bool = false {
+        didSet { updateAppearance() }
     }
     
     init(detectedWord: DetectedWord, frame: CGRect) {
@@ -1015,10 +1015,26 @@ class WordBoxView: UIView {
         super.init(frame: frame)
         layer.borderWidth = 1
         layer.cornerRadius = 2
-        self.isSelectedWord = false
+        updateAppearance()
     }
     
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    
+    private func updateAppearance() {
+        if isSelectedWord {
+            backgroundColor = UIColor.yellow.withAlphaComponent(0.4)
+        } else {
+            backgroundColor = isPhrase ? UIColor.systemTeal.withAlphaComponent(0.15) : UIColor.clear
+        }
+        
+        if isPhrase {
+            layer.borderColor = UIColor.systemTeal.withAlphaComponent(0.7).cgColor
+            layer.borderWidth = 2
+        } else {
+            layer.borderColor = isSelectedWord ? UIColor.yellow.cgColor : UIColor.gray.withAlphaComponent(0.3).cgColor
+            layer.borderWidth = 1
+        }
+    }
 }
 
 // --------------------------------------------------
@@ -1146,77 +1162,131 @@ struct SaveToCollectionView: View {
     }
     private func rankSenses(_ senses: [DictionarySense], contextSentence: String, word: String, mode: String) -> [DictionarySense] {
         guard !senses.isEmpty else { return [] }
-        
+
         if mode == DictionaryMode.allSenses.rawValue {
             var ordered = senses
             ordered[0].isBestMatch = true
             return ordered
         }
-        
-        let cleanContext = contextSentence.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        // 1. 🌟 DETECT PART OF SPEECH (Using Apple's Neural NLTagger)
-        var contextWordIsNoun = true // Default fallback
+
+        // 1. POS detection with full lexical class
         let tagger = NLTagger(tagSchemes: [.lexicalClass])
         tagger.string = contextSentence
-        
-        // 👇 FIX 2: Replaced `item.word` with `word`
         let range = contextSentence.range(of: word, options: .caseInsensitive) ?? contextSentence.startIndex..<contextSentence.endIndex
-        let (tag, _) = tagger.tag(at: range.lowerBound, unit: .word, scheme: .lexicalClass)
-        
-        
-        // 2. Score Senses
-        let stopWords: Set<String> = [
-            "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
-            "by", "as", "is", "are", "was", "were", "be", "been", "being", "it", "this", "that",
-            "he", "she", "they", "we", "i", "you", "his", "her", "their", "my", "your", "has",
-            "have", "had", "do", "does", "did", "out", "from", "up", "down", "which", "who", "whom"
-        ]
-        
-        let contextWords = Set(cleanContext
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty && !stopWords.contains($0) })
-        
-        let embedding = NLEmbedding.sentenceEmbedding(for: .english)
-        
-        var scoredSenses = senses.map { sense -> (DictionarySense, Double) in
-            let combinedText = "\(sense.definition) \(sense.example ?? "")".lowercased()
-            let senseWords = Set(combinedText
-                .components(separatedBy: CharacterSet.alphanumerics.inverted)
-                .filter { !$0.isEmpty && !stopWords.contains($0) })
-            
-            // Calculate Exact Keyword Overlap
-            let overlapCount = Double(contextWords.intersection(senseWords).count)
-            
-            var finalScore: Double = 0.0
-            
-            // Get Semantic Distance
-            if let emb = embedding {
-                let distance = emb.distance(between: cleanContext, and: combinedText)
-                finalScore = distance - (overlapCount * 0.15)
-            } else {
-                finalScore = -(overlapCount)
+        let (contextTag, _) = tagger.tag(at: range.lowerBound, unit: .word, scheme: .lexicalClass)
+        let contextPos = contextTag?.rawValue ?? ""
+
+        // Map dictionary sense wordType to canonical POS
+        func canonicalPOS(from sense: DictionarySense) -> String {
+            guard let type = sense.wordType?.lowercased() else { return "" }
+            if type.contains("verb") { return "Verb" }
+            if type.contains("noun") { return "Noun" }
+            if type.contains("adjective") || type.contains("adverb") { return "Adjective" }
+            if type.contains("pronoun") { return "Pronoun" }
+            return type
+        }
+
+        // 2. Build context keywords with TF‑IDF‑like weighting across all senses
+        let cleanContext = contextSentence.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let stopWords: Set<String> = ["a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
+                                      "by", "as", "is", "are", "was", "were", "be", "been", "being", "it", "this", "that",
+                                      "he", "she", "they", "we", "i", "you", "his", "her", "their", "my", "your", "has",
+                                      "have", "had", "do", "does", "did", "out", "from", "up", "down", "which", "who", "whom"]
+        let contextWords = Set(cleanContext.components(separatedBy: CharacterSet.alphanumerics.inverted)
+                                .filter { !$0.isEmpty && !stopWords.contains($0) })
+
+        // IDF‑like weights: log(totalSenses / document frequency)
+        let totalSenses = Double(senses.count)
+#if DEBUG
+for sense in senses {
+    print("[RankDebug] word='\(word)' rawType='\(sense.wordType ?? "nil")' canonical='\(canonicalPOS(from: sense))' contextPOS='\(contextPos)'")
+}
+#endif
+        var wordDocCount: [String: Int] = [:]
+        for sense in senses {
+            let text = "\(sense.definition) \(sense.example ?? "")".lowercased()
+            let uniqueWords = Set(text.components(separatedBy: CharacterSet.alphanumerics.inverted)
+                                    .filter { !$0.isEmpty && !stopWords.contains($0) })
+            for w in uniqueWords {
+                wordDocCount[w, default: 0] += 1
             }
-            
-            // 3. 👈 CRITICAL POS PENALTY:
-            // If the dictionary sense doesn't match the part of speech we detected, penalize it heavily!
-            if let type = sense.wordType?.lowercased() {
-                if contextWordIsNoun && type.contains("verb") {
-                    finalScore += 1.5 // Adds a heavy penalty to keep verbs out of noun contexts
-                } else if !contextWordIsNoun && type.contains("noun") {
-                    finalScore += 1.5 // Adds a heavy penalty to keep nouns out of verb contexts
+        }
+
+        // 3. Scoring
+        let embedding = NLEmbedding.sentenceEmbedding(for: .english)
+        let contextEmbedding = embedding?.vector(for: cleanContext)
+        #if DEBUG
+        print("[RankDebug] embedding available: \(embedding != nil), contextEmbedding available: \(contextEmbedding != nil)")
+        #endif
+
+        var scored = senses.map { sense -> (DictionarySense, Double) in
+            let senseText = "\(sense.definition) \(sense.example ?? "")".lowercased()
+            let senseWordsSet = Set(senseText.components(separatedBy: CharacterSet.alphanumerics.inverted)
+                                    .filter { !$0.isEmpty && !stopWords.contains($0) })
+
+            // A. POS match score
+            var posScore = 0.0
+            let sensePOS = canonicalPOS(from: sense)
+            if !sensePOS.isEmpty && !contextPos.isEmpty {
+                if sensePOS == contextPos {
+                    posScore = 1.0   // strong bonus
+                } else if (contextPos == "Noun" && sensePOS == "Adjective") ||
+                          (contextPos == "Verb" && sensePOS == "Adverb") {
+                    posScore = -0.5  // mild penalty
+                } else {
+                    posScore = -1.5  // heavy mismatch
                 }
             }
-            
+
+            // B. Weighted keyword overlap
+            var keywordScore = 0.0
+            for word in contextWords.intersection(senseWordsSet) {
+                let docFreq = Double(wordDocCount[word] ?? 1)
+                let idf = log(totalSenses / docFreq)
+                keywordScore += idf
+            }
+
+            // C. Semantic distance (cosine similarity)
+            var semanticScore = 0.0
+            if let contextVec = contextEmbedding, let senseVec = embedding?.vector(for: senseText) {
+                let dot = zip(contextVec, senseVec).map(*).reduce(0, +)
+                let magA = sqrt(contextVec.map { $0 * $0 }.reduce(0, +))
+                let magB = sqrt(senseVec.map { $0 * $0 }.reduce(0, +))
+                if magA > 0 && magB > 0 {
+                    let cosine = dot / (magA * magB)
+                    semanticScore = (cosine + 1) / 2   // rescale to 0..1
+                }
+            }
+
+            // D. Example sentence bonus (if available)
+            var exampleScore = 0.0
+            if let example = sense.example, !example.isEmpty,
+               let contextVec = contextEmbedding, let exampleVec = embedding?.vector(for: example.lowercased()) {
+                let dot = zip(contextVec, exampleVec).map(*).reduce(0, +)
+                let magA = sqrt(contextVec.map { $0 * $0 }.reduce(0, +))
+                let magB = sqrt(exampleVec.map { $0 * $0 }.reduce(0, +))
+                if magA > 0 && magB > 0 {
+                    let cosine = dot / (magA * magB)
+                    exampleScore = (cosine + 1) / 2
+                }
+            }
+
+            let finalScore = (posScore * 2.0) + (keywordScore * 0.8) + (semanticScore * 0.5) + (exampleScore * 2.0)
+            #if DEBUG
+            print("[RankDebug] '\(word)' '\(sense.definition.prefix(40))' pos=\(posScore) kw=\(keywordScore) sem=\(semanticScore) ex=\(exampleScore) hasExample=\(sense.example != nil) final=\(finalScore)")
+            #endif
             return (sense, finalScore)
         }
-        
-        // Sort by the lowest overall score (lowest distance/penalty wins!)
-        scoredSenses.sort { $0.1 < $1.1 }
-        
-        var sortedSenses = scoredSenses.map { $0.0 }
+
+        // Sort descending by score (higher = better)
+        scored.sort { $0.1 > $1.1 }
+        var sortedSenses = scored.map { $0.0 }
         sortedSenses[0].isBestMatch = true
-        
+#if DEBUG
+for (sense, score) in scored {
+    print("[RankDebug] '\(word)' candidate: \(sense.definition.prefix(50))... score=\(score)")
+}
+#endif
         return sortedSenses
     }
 
@@ -1315,10 +1385,11 @@ struct SaveToCollectionView: View {
                 registerLabel: item.registerLabel,
                 origin: item.origin
             )
+            card.senses = item.senses          // ← save the multi‑sense array
             modelContext.insert(card)
             card.book = bookToUse
             bookToUse.cards.append(card)
-            SpeechService.preloadAudio(from: item.pronunciationAudioURL)   // preload the audio
+            SpeechService.preloadAudio(from: item.pronunciationAudioURL)
         }
         
         try? modelContext.save()
@@ -1773,8 +1844,10 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
     
     private func runOCR() {
         WordDetector.recognizeWords(in: image) { [weak self] words in
+            guard let self = self else { return }
+            let enrichedWords = self.detectPhrases(from: words)
             DispatchQueue.main.async {
-                self?.drawWordBoxes(words)
+                self.drawWordBoxes(enrichedWords)
             }
         }
     }
@@ -1794,19 +1867,176 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
             let rect = CGRect(x: x, y: y, width: width, height: height)
             let boxView = WordBoxView(detectedWord: word, frame: rect)
             
+            boxView.isPhrase = word.isPhrase
             let tap = UITapGestureRecognizer(target: self, action: #selector(wordTapped(_:)))
             boxView.addGestureRecognizer(tap)
             overlayView.addSubview(boxView)
         }
     }
+    private func detectPhrases(from words: [DetectedWord]) -> [DetectedWord] {
+        // Group words by their contextSentence
+        var grouped: [String: [DetectedWord]] = [:]
+        for word in words {
+            grouped[word.contextSentence, default: []].append(word)
+        }
+
+        // Order sentences by the earliest word (top‑to‑bottom, left‑to‑right)
+        var sentenceOrder: [(sentence: String, minY: CGFloat, minX: CGFloat)] = []
+        for (sentence, wordList) in grouped {
+            let sorted = wordList.sorted { $0.boundingBox.minX < $1.boundingBox.minX }
+            let first = sorted.first!
+            sentenceOrder.append((sentence, first.boundingBox.minY, first.boundingBox.minX))
+        }
+        sentenceOrder.sort {
+            if abs($0.minY - $1.minY) > 0.005 { return $0.minY > $1.minY }
+            else { return $0.minX < $1.minX }
+        }
+
+        // Common particles used in phrasal verbs (e.g. "fly out", "give up", "look after")
+        let phrasalParticles: Set<String> = [
+            "out", "up", "off", "in", "away", "down", "on", "over",
+            "through", "back", "around", "along", "about", "into",
+            "onto", "after", "across", "by", "forward", "apart"
+        ]
+
+        var finalWords: [DetectedWord] = []
+
+        for (sentence, _, _) in sentenceOrder {
+            var wordList = grouped[sentence]!
+            wordList.sort { $0.boundingBox.minX < $1.boundingBox.minX }
+
+            let tagger = NSLinguisticTagger(tagSchemes: [.lexicalClass, .nameType], options: 0)
+            tagger.string = sentence
+
+            // Ranges of phrases in terms of UTF‑16 offsets (NSRange)
+            var phraseRanges: [NSRange] = []
+
+            // 1. Named entities
+            tagger.enumerateTags(in: NSRange(location: 0, length: sentence.utf16.count),
+                                 scheme: .nameType,
+                                 options: [.joinNames]) { tag, tokenRange, _, _ in
+                if tag != nil {
+                    phraseRanges.append(tokenRange)
+                }
+            }
+
+            // Tokenize into words, keeping both the string and the NSRange
+            let tokenizer = NLTokenizer(unit: .word)
+            tokenizer.string = sentence
+            var tokens: [(string: String, range: NSRange)] = []
+            tokenizer.enumerateTokens(in: sentence.startIndex..<sentence.endIndex) { range, _ in
+                let str = String(sentence[range])
+                let nsRange = NSRange(range, in: sentence)
+                tokens.append((str, nsRange))
+                return true
+            }
+
+            func tag(forTokenAt index: Int) -> NSLinguisticTag? {
+                let location = tokens[index].range.location
+                return tagger.tag(at: location, scheme: .lexicalClass, tokenRange: nil, sentenceRange: nil)
+            }
+
+            // 2. Noun phrases (consecutive Nouns / Adjectives)
+            var i = 0
+            while i < tokens.count {
+                let currentTag = tag(forTokenAt: i)
+                if currentTag == .noun || currentTag == .adjective {
+                    let start = i
+                    i += 1
+                    while i < tokens.count {
+                        let nextTag = tag(forTokenAt: i)
+                        if nextTag == .noun || nextTag == .adjective {
+                            i += 1
+                        } else {
+                            break
+                        }
+                    }
+                    if i - start > 1 {
+                        let startLocation = tokens[start].range.location
+                        let endLocation = tokens[i - 1].range.location + tokens[i - 1].range.length
+                        let phraseRange = NSRange(location: startLocation, length: endLocation - startLocation)
+                        phraseRanges.append(phraseRange)
+                    }
+                } else {
+                    i += 1
+                }
+            }
+
+            // 3. Phrasal verbs (Verb immediately followed by a known particle)
+            var j = 0
+            while j < tokens.count {
+                let currentTag = tag(forTokenAt: j)
+                if currentTag == .verb, j + 1 < tokens.count {
+                    let nextWordLower = tokens[j + 1].string.lowercased()
+                    if phrasalParticles.contains(nextWordLower) {
+                        let startLocation = tokens[j].range.location
+                        let endLocation = tokens[j + 1].range.location + tokens[j + 1].range.length
+                        let phraseRange = NSRange(location: startLocation, length: endLocation - startLocation)
+                        phraseRanges.append(phraseRange)
+                        j += 2
+                        continue
+                    }
+                }
+                j += 1
+            }
+
+            // 4. Merge words that are covered by phrase ranges
+            var mergedWords: [DetectedWord] = []
+            var coveredIndices = Set<Int>()
+
+            for phraseRange in phraseRanges {
+                guard let phraseTextRange = Range(phraseRange, in: sentence) else { continue }
+                let phraseText = String(sentence[phraseTextRange])
+                let phraseWords = phraseText.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+
+                guard phraseWords.count <= wordList.count, phraseWords.count > 0 else { continue }
+                for startIdx in 0...(wordList.count - phraseWords.count) {
+                    let slice = wordList[startIdx..<startIdx + phraseWords.count].map { $0.text }
+                    if slice == phraseWords {
+                        for idx in startIdx..<startIdx + phraseWords.count {
+                            coveredIndices.insert(idx)
+                        }
+                        let mergedBox = wordList[startIdx].boundingBox.union(
+                            wordList[startIdx + phraseWords.count - 1].boundingBox)
+
+                        let phraseWord = DetectedWord(
+                            text: phraseText,
+                            boundingBox: mergedBox,
+                            contextSentence: sentence,
+                            isPhrase: true,
+                            phraseComponents: phraseWords
+                        )
+                        mergedWords.append(phraseWord)
+                        break
+                    }
+                }
+            }
+
+            // Add words not covered by any phrase
+            for (idx, word) in wordList.enumerated() {
+                if !coveredIndices.contains(idx) {
+                    mergedWords.append(word)
+                }
+            }
+
+            // Keep left‑to‑right order within the sentence
+            mergedWords.sort { $0.boundingBox.minX < $1.boundingBox.minX }
+            finalWords.append(contentsOf: mergedWords)
+        }
+
+        return finalWords
+    }
+
     
     @objc private func wordTapped(_ gesture: UITapGestureRecognizer) {
         guard let boxView = gesture.view as? WordBoxView else { return }
+        let word = boxView.detectedWord
+
         boxView.isSelectedWord.toggle()
         if boxView.isSelectedWord {
-            selectedWords.append(boxView.detectedWord)
+            selectedWords.append(word)
         } else {
-            selectedWords.removeAll { $0.id == boxView.detectedWord.id }
+            selectedWords.removeAll { $0.id == word.id }
         }
         updateSelectedLabel()
     }
@@ -1850,6 +2080,8 @@ struct DetectedWord: Identifiable {
     let text: String
     let boundingBox: CGRect
     let contextSentence: String
+    var isPhrase: Bool = false
+    var phraseComponents: [String]? = nil
 }
 
 final class WordDetector {
@@ -1858,64 +2090,121 @@ final class WordDetector {
             completion([])
             return
         }
-        
+
         let orientation = CGImagePropertyOrientation(image.imageOrientation)
         let request = VNRecognizeTextRequest { request, error in
-            guard let observations = request.results as? [VNRecognizedTextObservation],
-                  error == nil else {
+            guard let observations = request.results as? [VNRecognizedTextObservation], error == nil else {
                 completion([])
                 return
             }
-            
-            let fullText = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+
+            // 1. Build lines with text and bounding boxes
+            var lines: [(text: String, box: CGRect)] = []
+            for obs in observations {
+                guard let candidate = obs.topCandidates(1).first else { continue }
+                let line = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !line.isEmpty {
+                    lines.append((text: line, box: obs.boundingBox))
+                }
+            }
+
+            // 2. Sort lines top-to-bottom, left-to-right
+            lines.sort {
+                if abs($0.box.minY - $1.box.minY) > 0.005 { return $0.box.minY > $1.box.minY }
+                else { return $0.box.minX < $1.box.minX }
+            }
+
+            // 3. Build full text and tokenize into sentences
+            // Insert paragraph breaks between lines with a large vertical gap,
+            // so unrelated text blocks (e.g. toolbar UI vs. body paragraph)
+            // don't get merged into a single "sentence" by the tokenizer.
+            var fullTextBuilder = ""
+            for (i, line) in lines.enumerated() {
+                if i > 0 {
+                    let prevY = lines[i - 1].box.minY
+                    let gap = abs(prevY - line.box.minY)
+                    fullTextBuilder += gap > 0.03 ? "\n\n" : " "
+                }
+                fullTextBuilder += line.text
+            }
+            let fullText = fullTextBuilder
             let tokenizer = NLTokenizer(unit: .sentence)
             tokenizer.string = fullText
-            var sentences: [String] = []
-            tokenizer.enumerateTokens(in: fullText.startIndex..<fullText.endIndex) { tokenRange, _ in
-                sentences.append(String(fullText[tokenRange]))
+            var sentenceRanges: [Range<String.Index>] = []
+            tokenizer.enumerateTokens(in: fullText.startIndex..<fullText.endIndex) { range, _ in
+                sentenceRanges.append(range)
                 return true
             }
-            
-            var words: [DetectedWord] = []
-            for observation in observations {
-                guard let topCandidate = observation.topCandidates(1).first else { continue }
-                let lineText = topCandidate.string
-                let lineBox = observation.boundingBox
-                let rawWords = lineText.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
-                guard !rawWords.isEmpty else { continue }
-                
-                let totalChars = rawWords.reduce(0) { $0 + $1.count }
+            let sentences = sentenceRanges.map { String(fullText[$0]) }
+
+            // 4. Map each line to a sentence by character-position overlap
+            // First, recompute the character range each line occupies in fullText
+            var lineRanges: [Range<String.Index>] = []
+            var cursor = fullText.startIndex
+            for line in lines {
+                guard let lineRange = fullText.range(of: line.text, range: cursor..<fullText.endIndex) else {
+                    lineRanges.append(cursor..<cursor)
+                    continue
+                }
+                lineRanges.append(lineRange)
+                cursor = lineRange.upperBound
+            }
+
+            var lineSentenceMap = [Int](repeating: 0, count: lines.count)
+            for (i, lineRange) in lineRanges.enumerated() {
+                var bestIdx = 0
+                var bestOverlap = 0
+                for (idx, sentRange) in sentenceRanges.enumerated() {
+                    let overlapStart = max(lineRange.lowerBound, sentRange.lowerBound)
+                    let overlapEnd = min(lineRange.upperBound, sentRange.upperBound)
+                    if overlapStart < overlapEnd {
+                        let overlapLength = fullText.distance(from: overlapStart, to: overlapEnd)
+                        if overlapLength > bestOverlap {
+                            bestOverlap = overlapLength
+                            bestIdx = idx
+                        }
+                    }
+                }
+                lineSentenceMap[i] = bestIdx
+            }
+
+            // 5. Split lines into words, assign correct sentence
+            var results: [DetectedWord] = []
+            for (lineIdx, line) in lines.enumerated() {
+                let wordsInLine = line.text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+                let totalChars = wordsInLine.reduce(0) { $0 + $1.count }
                 var currentX: CGFloat = 0
-                
-                for rawWord in rawWords {
-                    let proportion = CGFloat(rawWord.count) / CGFloat(totalChars)
-                    let wordWidth = lineBox.width * proportion
-                    let wordHeight = lineBox.height
-                    let wordX = lineBox.origin.x + currentX
-                    let wordY = lineBox.origin.y
+                for word in wordsInLine {
+                    let proportion = CGFloat(word.count) / CGFloat(totalChars)
+                    let wordWidth = line.box.width * proportion
+                    let wordHeight = line.box.height
+                    let wordX = line.box.origin.x + currentX
+                    let wordY = line.box.origin.y
                     let wordBox = CGRect(x: wordX, y: wordY, width: wordWidth, height: wordHeight)
-                    
-                    let fullSentence = sentences.first { sentence in
-                        sentence.localizedCaseInsensitiveContains(rawWord)
-                    } ?? lineText
-                    
-                    words.append(DetectedWord(text: rawWord, boundingBox: wordBox, contextSentence: fullSentence))
+
+                    let sentenceIndex = lineSentenceMap[lineIdx]
+                    let contextSentence = sentences.indices.contains(sentenceIndex) ? sentences[sentenceIndex] : line.text
+
+                    results.append(DetectedWord(text: word, boundingBox: wordBox, contextSentence: contextSentence,
+                                                isPhrase: false, phraseComponents: nil))
                     currentX += wordWidth
                 }
             }
-            
-            words.sort { w1, w2 in
+
+            // Sort final results top-to-bottom, left-to-right
+            results.sort { w1, w2 in
                 let y1 = w1.boundingBox.origin.y + w1.boundingBox.height
                 let y2 = w2.boundingBox.origin.y + w2.boundingBox.height
                 if abs(y1 - y2) > 0.01 { return y1 > y2 }
                 return w1.boundingBox.origin.x < w2.boundingBox.origin.x
             }
-            completion(words)
+
+            completion(results)
         }
-        
+
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
-        
+
         let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
         DispatchQueue.global(qos: .userInitiated).async {
             try? handler.perform([request])

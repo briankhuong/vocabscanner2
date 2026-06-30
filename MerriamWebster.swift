@@ -86,21 +86,36 @@ struct MerriamWebster {
                                 senseDict = dict
                             }
                             
-                            guard let senseData = senseDict, let dtArray = senseData["dt"] as? [[Any]] else { continue }
-                            
+                            guard let senseData = senseDict else { continue }
+
                             registerLabel = (senseData["sls"] as? [String])?.first
-                            
-                            for dt in dtArray {
-                                guard let first = dt.first as? String, dt.count > 1 else { continue }
-                                
-                                if first == "text", let defText = dt[1] as? String {
-                                    currentDef = defText
+
+                            // Helper to scan a dt array for both definition text and example sentences
+                            func scanDtArray(_ dtArray: [[Any]]) {
+                                for dt in dtArray {
+                                    guard let first = dt.first as? String, dt.count > 1 else { continue }
+                                    
+                                    if first == "text", let defText = dt[1] as? String, currentDef.isEmpty {
+                                        currentDef = defText
+                                    }
+                                    
+                                    if first == "vis", let examples = dt[1] as? [Any], let firstObj = examples.first {
+                                        if let s = firstObj as? String { currentExample = s }
+                                        else if let dict = firstObj as? NSDictionary, let t = dict["t"] as? String { currentExample = t }
+                                    }
                                 }
-                                
-                                if first == "vis", let examples = dt[1] as? [Any], let firstObj = examples.first {
-                                    if let s = firstObj as? String { currentExample = s }
-                                    else if let dict = firstObj as? NSDictionary, let t = dict["t"] as? String { currentExample = t }
-                                }
+                            }
+
+                            // 1. Check the sense's top-level dt array
+                            if let dtArray = senseData["dt"] as? [[Any]] {
+                                scanDtArray(dtArray)
+                            }
+
+                            // 2. Some senses nest their actual content (including examples) under "sdsense"
+                            //    (a divided/secondary sense block) rather than the top-level dt.
+                            if currentExample == nil, let sdsense = senseData["sdsense"] as? [String: Any],
+                               let sdDtArray = sdsense["dt"] as? [[Any]] {
+                                scanDtArray(sdDtArray)
                             }
                         }
                         
