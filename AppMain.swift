@@ -286,11 +286,16 @@ struct BookDetailView: View {
                             .fontWeight(.bold)
                             .foregroundColor(.accentColor)
                         Button {
+                            print("[Audio] Word speaker tapped")
                             SpeechService.pronounce(word: card.word, audioURL: card.pronunciationAudioURL)
                         } label: {
                             Image(systemName: "speaker.wave.2")
                                 .font(.title3)
+                                .frame(width: 32, height: 32)
+                                .background(Color.gray.opacity(0.1))
+                                .clipShape(Circle())
                         }
+                        .buttonStyle(.plain)
                         if let pronunciation = card.pronunciation, !pronunciation.isEmpty, pronunciation != "N/A" {
                             Text(pronunciation)
                                 .font(.subheadline)
@@ -311,6 +316,18 @@ struct BookDetailView: View {
                             Text(def)
                                 .font(.subheadline)
                                 .foregroundColor(.primary)
+                            Spacer()
+                            Button {
+                                print("[TTS] Speak definition")
+                                SpeechService.speak(text: def)
+                            } label: {
+                                Image(systemName: "speaker.wave.2")
+                                    .font(.caption)
+                                    .frame(width: 28, height: 28)
+                                    .background(Color.gray.opacity(0.15))
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
                         }
                         .padding(.leading, 4)
                     }
@@ -341,6 +358,18 @@ struct BookDetailView: View {
                             Text(dictEx)
                                 .font(.subheadline)
                                 .foregroundColor(.orange)
+                            Spacer()
+                            Button {
+                                print("[Audio] Dictionary example speaker tapped")
+                                SpeechService.speak(text: dictEx)
+                            } label: {
+                                Image(systemName: "speaker.wave.2")
+                                    .font(.caption)
+                                    .frame(width: 28, height: 28)
+                                    .background(Color.gray.opacity(0.1))
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
                         }
                         .padding(.leading, 4)
                     }
@@ -1195,11 +1224,16 @@ struct VocabItemRowView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(item.word).font(.headline).foregroundColor(.accentColor)
                 Button {
+                    print("[Audio] Word speaker tapped (save sheet)")
                     SpeechService.pronounce(word: item.word, audioURL: item.pronunciationAudioURL)
                 } label: {
                     Image(systemName: "speaker.wave.2")
                         .font(.headline)
+                        .frame(width: 28, height: 28)
+                        .background(Color.gray.opacity(0.1))
+                        .clipShape(Circle())
                 }
+                .buttonStyle(.plain)
                 if !item.pronunciation.isEmpty && item.pronunciation != "N/A" {
                     Text(item.pronunciation)
                         .font(.caption)
@@ -1218,6 +1252,18 @@ struct VocabItemRowView: View {
                 HStack(spacing: 8) {
                     Rectangle().fill(Color.accentColor.opacity(0.3)).frame(width: 2)
                     Text(item.definition).font(.footnote).foregroundColor(.primary)
+                    Spacer()
+                    Button {
+                        print("[Audio] Definition speaker tapped (save sheet)")
+                        SpeechService.speak(text: item.definition)
+                    } label: {
+                        Image(systemName: "speaker.wave.2")
+                            .font(.caption)
+                            .frame(width: 28, height: 28)
+                            .background(Color.gray.opacity(0.1))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
                 }
                 .padding(.leading, 4)
             } else {
@@ -1248,6 +1294,18 @@ struct VocabItemRowView: View {
                         Text(dictExample)
                             .font(.footnote)
                             .foregroundColor(.orange)
+                        Spacer()
+                        Button {
+                            print("[Audio] Dictionary example speaker tapped (save sheet)")
+                            SpeechService.speak(text: dictExample)
+                        } label: {
+                            Image(systemName: "speaker.wave.2")
+                                .font(.caption)
+                                .frame(width: 28, height: 28)
+                                .background(Color.gray.opacity(0.1))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
                     }
                     .padding(.leading, 4)
                 }

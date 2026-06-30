@@ -92,4 +92,11 @@ struct SpeechService {
             try? data.write(to: localFile)
         }.resume()
     }
+    /// Speak any English text using on‑device TTS
+    static func speak(text: String) {
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        synthesizer.speak(utterance)
+    }
+    
 }
