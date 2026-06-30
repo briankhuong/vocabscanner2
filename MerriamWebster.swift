@@ -32,8 +32,31 @@ struct MerriamWebster {
             throw NSError(domain: "MW", code: 404, userInfo: [NSLocalizedDescriptionKey: "Did you mean \(suggestion)?"])
         }
         
-        // Use the first entry just for global word properties (Origin & Pronunciation)
-        guard let firstEntryDict = jsonArray.first as? [String: Any] else { return nil }
+        // Helper: does this entry's headword actually match the word we looked up?
+        // MW often returns cross-referenced/stem entries (e.g. looking up "correctly"
+        // can return the "correct" entry, since "correctly" is listed under its stems).
+        // We must only keep entries whose own headword matches, otherwise we silently
+        // show definitions for the wrong word/part of speech.
+        func headwordMatches(_ entryDict: [String: Any]) -> Bool {
+            // meta.id looks like "correct" or "correct:2" (homograph numbering) or "correct:1:adjective"
+            if let meta = entryDict["meta"] as? [String: Any], let id = meta["id"] as? String {
+                let base = id.split(separator: ":").first.map(String.init) ?? id
+                if base.lowercased() == trimmed.lowercased() { return true }
+            }
+            // hwi.hw looks like "cor*rect*ly" with syllable markers
+            if let hwi = entryDict["hwi"] as? [String: Any], let hw = hwi["hw"] as? String {
+                let cleaned = hw.replacingOccurrences(of: "*", with: "").lowercased()
+                if cleaned == trimmed.lowercased() { return true }
+            }
+            return false
+        }
+
+        let matchingEntries = jsonArray.compactMap { $0 as? [String: Any] }.filter(headwordMatches)
+
+        // If nothing matches the exact headword, the API likely returned only
+        // spelling suggestions/cross-references for an unrecognized word — bail out
+        // rather than silently using the wrong word's definitions.
+        guard let firstEntryDict = matchingEntries.first else { return nil }
         
         // 1. Extract Word-level properties (Origin)
         let origin: String? = {
@@ -62,11 +85,10 @@ struct MerriamWebster {
             }
         }
         
-        // 3. Extract multiple Senses (Loop through multiple Homographs in jsonArray!)
+        // 3. Extract multiple Senses (Loop through multiple Homographs of the SAME headword)
         var extractedSenses: [DictionarySense] = []
-        
-        for element in jsonArray {
-            guard let entryDict = element as? [String: Any] else { continue }
+
+        for entryDict in matchingEntries {
             let wordType = entryDict["fl"] as? String
             
             if let defs = entryDict["def"] as? [[String: Any]] {

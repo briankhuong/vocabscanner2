@@ -1163,6 +1163,35 @@ struct SaveToCollectionView: View {
     private func rankSenses(_ senses: [DictionarySense], contextSentence: String, word: String, mode: String) -> [DictionarySense] {
         guard !senses.isEmpty else { return [] }
 
+        // Declared before lemmatizedWords since Swift requires local vars to be
+        // declared lexically before any nested function references them.
+        let stopWords: Set<String> = ["a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
+                                      "by", "as", "is", "are", "was", "were", "be", "been", "being", "it", "this", "that",
+                                      "he", "she", "they", "we", "i", "you", "his", "her", "their", "my", "your", "has",
+                                      "have", "had", "do", "does", "did", "out", "from", "up", "down", "which", "who", "whom"]
+
+        // Lemmatize so inflected forms match their dictionary headword (e.g. "flew" -> "fly",
+        // "wings" -> "wing"). Without this, keyword overlap misses real matches and is
+        // dominated by incidental single-word coincidences.
+        func lemmatizedWords(from text: String) -> Set<String> {
+            let tagger = NLTagger(tagSchemes: [.lemma])
+            tagger.string = text
+            var result = Set<String>()
+            tagger.enumerateTags(in: text.startIndex..<text.endIndex, unit: .word, scheme: .lemma) { tag, range in
+                let lemma = (tag?.rawValue ?? String(text[range])).lowercased()
+                if !lemma.isEmpty && !stopWords.contains(lemma) {
+                    result.insert(lemma)
+                }
+                return true
+            }
+            return result
+        }
+
+        // Clear any stale flags from a prior ranking pass (e.g. dictionaryMode toggled
+        // after senses were already computed/cached).
+        var senses = senses
+        for i in senses.indices { senses[i].isBestMatch = false }
+
         if mode == DictionaryMode.allSenses.rawValue {
             var ordered = senses
             ordered[0].isBestMatch = true
@@ -1170,10 +1199,24 @@ struct SaveToCollectionView: View {
         }
 
         // 1. POS detection with full lexical class
+        // Tokenize into whole words and match the exact token, rather than range(of:),
+        // which can match a substring (e.g. "cat" inside "category") or the wrong
+        // occurrence of a repeated word.
         let tagger = NLTagger(tagSchemes: [.lexicalClass])
         tagger.string = contextSentence
-        let range = contextSentence.range(of: word, options: .caseInsensitive) ?? contextSentence.startIndex..<contextSentence.endIndex
-        let (contextTag, _) = tagger.tag(at: range.lowerBound, unit: .word, scheme: .lexicalClass)
+
+        let wordTokenizer = NLTokenizer(unit: .word)
+        wordTokenizer.string = contextSentence
+        var matchedRange: Range<String.Index>? = nil
+        wordTokenizer.enumerateTokens(in: contextSentence.startIndex..<contextSentence.endIndex) { tokenRange, _ in
+            if contextSentence[tokenRange].caseInsensitiveCompare(word) == .orderedSame {
+                matchedRange = tokenRange
+                return false // stop at first whole-word match
+            }
+            return true
+        }
+        let anchor = matchedRange?.lowerBound ?? contextSentence.startIndex
+        let (contextTag, _) = tagger.tag(at: anchor, unit: .word, scheme: .lexicalClass)
         let contextPos = contextTag?.rawValue ?? ""
 
         // Map dictionary sense wordType to canonical POS
@@ -1181,19 +1224,15 @@ struct SaveToCollectionView: View {
             guard let type = sense.wordType?.lowercased() else { return "" }
             if type.contains("verb") { return "Verb" }
             if type.contains("noun") { return "Noun" }
-            if type.contains("adjective") || type.contains("adverb") { return "Adjective" }
+            if type.contains("adjective") { return "Adjective" }
+            if type.contains("adverb") { return "Adverb" }
             if type.contains("pronoun") { return "Pronoun" }
             return type
         }
 
         // 2. Build context keywords with TF‑IDF‑like weighting across all senses
         let cleanContext = contextSentence.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        let stopWords: Set<String> = ["a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
-                                      "by", "as", "is", "are", "was", "were", "be", "been", "being", "it", "this", "that",
-                                      "he", "she", "they", "we", "i", "you", "his", "her", "their", "my", "your", "has",
-                                      "have", "had", "do", "does", "did", "out", "from", "up", "down", "which", "who", "whom"]
-        let contextWords = Set(cleanContext.components(separatedBy: CharacterSet.alphanumerics.inverted)
-                                .filter { !$0.isEmpty && !stopWords.contains($0) })
+        let contextWords = lemmatizedWords(from: contextSentence)
 
         // IDF‑like weights: log(totalSenses / document frequency)
         let totalSenses = Double(senses.count)
@@ -1204,9 +1243,8 @@ for sense in senses {
 #endif
         var wordDocCount: [String: Int] = [:]
         for sense in senses {
-            let text = "\(sense.definition) \(sense.example ?? "")".lowercased()
-            let uniqueWords = Set(text.components(separatedBy: CharacterSet.alphanumerics.inverted)
-                                    .filter { !$0.isEmpty && !stopWords.contains($0) })
+            let text = "\(sense.definition) \(sense.example ?? "")"
+            let uniqueWords = lemmatizedWords(from: text)
             for w in uniqueWords {
                 wordDocCount[w, default: 0] += 1
             }
@@ -1219,63 +1257,118 @@ for sense in senses {
         print("[RankDebug] embedding available: \(embedding != nil), contextEmbedding available: \(contextEmbedding != nil)")
         #endif
 
-        var scored = senses.map { sense -> (DictionarySense, Double) in
-            let senseText = "\(sense.definition) \(sense.example ?? "")".lowercased()
-            let senseWordsSet = Set(senseText.components(separatedBy: CharacterSet.alphanumerics.inverted)
-                                    .filter { !$0.isEmpty && !stopWords.contains($0) })
+        // First pass: compute raw component scores per sense (no weighting yet).
+        struct RawScore {
+            let sense: DictionarySense
+            let posScore: Double
+            let keywordScore: Double
+            let semanticScore: Double
+            let exampleScore: Double
+            let hasExample: Bool
+        }
+
+        var rawScores: [RawScore] = senses.map { sense in
+            let senseText = "\(sense.definition) \(sense.example ?? "")"
+            let senseWordsSet = lemmatizedWords(from: senseText)
 
             // A. POS match score
             var posScore = 0.0
             let sensePOS = canonicalPOS(from: sense)
             if !sensePOS.isEmpty && !contextPos.isEmpty {
                 if sensePOS == contextPos {
-                    posScore = 1.0   // strong bonus
+                    posScore = 1.0
+                } else if (sensePOS == "Adjective" && contextPos == "Adverb") ||
+                          (sensePOS == "Adverb" && contextPos == "Adjective") {
+                    posScore = 0.5
                 } else if (contextPos == "Noun" && sensePOS == "Adjective") ||
                           (contextPos == "Verb" && sensePOS == "Adverb") {
-                    posScore = -0.5  // mild penalty
+                    posScore = -0.5
                 } else {
-                    posScore = -1.5  // heavy mismatch
+                    posScore = -1.5
                 }
             }
 
-            // B. Weighted keyword overlap
+            // B. Word-embedding-based content overlap. Exact-string / lemma matching misses
+            // inflected and related forms (e.g. "flew" vs "flies" vs "wing"/"wings") because
+            // NLTagger's .lemma scheme frequently fails to normalize irregular or
+            // context-ambiguous words. Instead, compare each context content word's embedding
+            // against each sense content word's embedding and take the best match per word —
+            // this captures near-synonyms and inflections without requiring exact equality.
             var keywordScore = 0.0
-            for word in contextWords.intersection(senseWordsSet) {
-                let docFreq = Double(wordDocCount[word] ?? 1)
-                let idf = log(totalSenses / docFreq)
-                keywordScore += idf
+            if let wordEmbedding = embedding {
+                for cWord in contextWords {
+                    guard let cVec = wordEmbedding.vector(for: cWord) else { continue }
+                    var bestSim = 0.0
+                    for sWord in senseWordsSet {
+                        guard let sVec = wordEmbedding.vector(for: sWord) else { continue }
+                        let dot = zip(cVec, sVec).map(*).reduce(0, +)
+                        let magA = sqrt(cVec.map { $0 * $0 }.reduce(0, +))
+                        let magB = sqrt(sVec.map { $0 * $0 }.reduce(0, +))
+                        guard magA > 0, magB > 0 else { continue }
+                        let cosine = dot / (magA * magB)
+                        if cosine > bestSim { bestSim = cosine }
+                    }
+                    // Only count meaningfully close matches; near-zero similarity is noise.
+                    if bestSim > 0.4 {
+                        let docFreq = Double(wordDocCount[cWord] ?? 1)
+                        let idf = log(totalSenses / max(docFreq, 1))
+                        keywordScore += bestSim * max(idf, 0.1)
+                    }
+                }
             }
 
-            // C. Semantic distance (cosine similarity)
+            // C. Semantic distance (cosine similarity) — raw, will be centered below
             var semanticScore = 0.0
             if let contextVec = contextEmbedding, let senseVec = embedding?.vector(for: senseText) {
                 let dot = zip(contextVec, senseVec).map(*).reduce(0, +)
                 let magA = sqrt(contextVec.map { $0 * $0 }.reduce(0, +))
                 let magB = sqrt(senseVec.map { $0 * $0 }.reduce(0, +))
                 if magA > 0 && magB > 0 {
-                    let cosine = dot / (magA * magB)
-                    semanticScore = (cosine + 1) / 2   // rescale to 0..1
+                    semanticScore = (dot / (magA * magB) + 1) / 2
                 }
             }
 
-            // D. Example sentence bonus (if available)
+            // D. Example sentence bonus — raw, will be centered below.
+            // Only computed when an example exists; senses without one are excluded
+            // from the mean rather than silently scored as 0, so lacking an example
+            // doesn't get punished relative to senses that have one.
             var exampleScore = 0.0
-            if let example = sense.example, !example.isEmpty,
-               let contextVec = contextEmbedding, let exampleVec = embedding?.vector(for: example.lowercased()) {
+            let hasExample = sense.example != nil && !(sense.example!.isEmpty)
+            if hasExample, let contextVec = contextEmbedding, let exampleVec = embedding?.vector(for: sense.example!.lowercased()) {
                 let dot = zip(contextVec, exampleVec).map(*).reduce(0, +)
                 let magA = sqrt(contextVec.map { $0 * $0 }.reduce(0, +))
                 let magB = sqrt(exampleVec.map { $0 * $0 }.reduce(0, +))
                 if magA > 0 && magB > 0 {
-                    let cosine = dot / (magA * magB)
-                    exampleScore = (cosine + 1) / 2
+                    exampleScore = (dot / (magA * magB) + 1) / 2
                 }
             }
 
-            let finalScore = (posScore * 2.0) + (keywordScore * 0.8) + (semanticScore * 0.5) + (exampleScore * 2.0)
+            return RawScore(sense: sense, posScore: posScore, keywordScore: keywordScore,
+                             semanticScore: semanticScore, exampleScore: exampleScore, hasExample: hasExample)
+        }
+
+        // Center semantic score around the mean across all senses of this word —
+        // this removes NLEmbedding's baseline noise (unrelated sentences routinely
+        // cosine ~0.5-0.7) and keeps only the *relative* signal.
+        let meanSemantic = rawScores.map { $0.semanticScore }.reduce(0, +) / Double(max(rawScores.count, 1))
+
+        // Center example score only across senses that actually HAVE an example,
+        // so senses without one aren't compared against a mean that includes their
+        // own forced zero (which would over-reward having an example at all).
+        let withExample = rawScores.filter { $0.hasExample }
+        let meanExample = withExample.isEmpty ? 0.0 : withExample.map { $0.exampleScore }.reduce(0, +) / Double(withExample.count)
+
+        var scored: [(DictionarySense, Double)] = rawScores.map { raw in
+            let centeredSemantic = raw.semanticScore - meanSemantic
+            // Senses without an example contribute 0 (neutral), not a penalty;
+            // senses with an example are scored relative to the example-bearing mean.
+            let centeredExample = raw.hasExample ? (raw.exampleScore - meanExample) : 0.0
+
+            let finalScore = (raw.posScore * 2.0) + (raw.keywordScore * 0.8) + (centeredSemantic * 1.5) + (centeredExample * 1.5)
             #if DEBUG
-            print("[RankDebug] '\(word)' '\(sense.definition.prefix(40))' pos=\(posScore) kw=\(keywordScore) sem=\(semanticScore) ex=\(exampleScore) hasExample=\(sense.example != nil) final=\(finalScore)")
+            print("[RankDebug] '\(word)' '\(raw.sense.definition.prefix(40))' pos=\(raw.posScore) kw=\(raw.keywordScore) sem=\(centeredSemantic) ex=\(centeredExample) hasExample=\(raw.hasExample) final=\(finalScore)")
             #endif
-            return (sense, finalScore)
+            return (raw.sense, finalScore)
         }
 
         // Sort descending by score (higher = better)
