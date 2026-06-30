@@ -12,13 +12,19 @@ struct ReviewSessionView: View {
     @State private var sessionCompleted = false
     @State private var reviewedCount = 0
     @State private var isCramMode = false
+    @State private var practiceItem: PracticeItem? = nil
     @State private var sessionCards: [VocabCard]? = nil
-
+    struct PracticeItem: Identifiable {
+        let id = UUID()
+        let word: String
+        let audioURL: String?
+    }
     enum Step {
         case definition   // show definition, tap for hint
         case hint         // show blanked sentence, tap for answer
         case answer       // show word + translation, then rate
     }
+    
 
     private var dueCards: [VocabCard] {
         // Use the snapshot if we have one; otherwise compute live (only before session starts)
@@ -192,9 +198,21 @@ struct ReviewSessionView: View {
 
                                 case .answer:
                                     VStack(spacing: 16) {
-                                        Text(card.word)
-                                            .font(.largeTitle)
-                                            .fontWeight(.bold)
+                                        HStack {
+                                            Text(card.word)
+                                                .font(.largeTitle)
+                                                .fontWeight(.bold)
+                                            Button {
+                                                SpeechService.pronounce(word: card.word, audioURL: card.pronunciationAudioURL)
+                                            } label: {
+                                                Image(systemName: "speaker.wave.2")
+                                                    .font(.title2)
+                                                    .frame(width: 32, height: 32)
+                                                    .background(Color.gray.opacity(0.1))
+                                                    .clipShape(Circle())
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
 
                                         VStack(spacing: 8) {
                                             if !card.translation.isEmpty && card.translation != "Translation unavailable" {
@@ -207,6 +225,14 @@ struct ReviewSessionView: View {
                                                 .italic()
                                                 .foregroundColor(.secondary)
                                         }
+
+                                        Button {
+                                            practiceItem = PracticeItem(word: card.word, audioURL: card.pronunciationAudioURL)
+                                        } label: {
+                                            Label("Practice Pronunciation", systemImage: "mic")
+                                                .font(.callout)
+                                        }
+                                        .buttonStyle(.bordered)
                                     }
                                 }
                             }
@@ -270,7 +296,11 @@ struct ReviewSessionView: View {
                                                 } label: {
                                                     Image(systemName: "speaker.wave.2")
                                                         .font(.title2)
+                                                        .frame(width: 32, height: 32)
+                                                        .background(Color.gray.opacity(0.1))
+                                                        .clipShape(Circle())
                                                 }
+                                                .buttonStyle(.plain)
                                             }
                                             if !card.translation.isEmpty && card.translation != "Translation unavailable" {
                                                 Text(card.translation)
@@ -286,6 +316,14 @@ struct ReviewSessionView: View {
                                             .foregroundColor(.secondary)
                                             .multilineTextAlignment(.center)
                                             .padding(.horizontal)
+
+                                        Button {
+                                            practiceItem = PracticeItem(word: card.word, audioURL: card.pronunciationAudioURL)
+                                        } label: {
+                                            Label("Practice Pronunciation", systemImage: "mic")
+                                                .font(.callout)
+                                        }
+                                        .buttonStyle(.bordered)
                                     }
                                 }
                             }
@@ -318,6 +356,9 @@ struct ReviewSessionView: View {
             // Take a snapshot of due cards for this session
             sessionCards = computeDueCards()
         }
+        .sheet(item: $practiceItem) { item in
+            PronunciationPracticeView(word: item.word, audioURL: item.audioURL)
+        }
         .onChange(of: isCramMode) { _, _ in
             sessionCards = computeDueCards()
             currentCardIndex = 0
@@ -339,7 +380,11 @@ struct ReviewSessionView: View {
                     } label: {
                         Image(systemName: "speaker.wave.2")
                             .font(.title2)
+                            .frame(width: 32, height: 32)
+                            .background(Color.gray.opacity(0.1))
+                            .clipShape(Circle())
                     }
+                    .buttonStyle(.plain)
                 }
                 Text(card.translation)
                     .font(.title3)
@@ -353,6 +398,14 @@ struct ReviewSessionView: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
+
+            Button {
+                practiceItem = PracticeItem(word: card.word, audioURL: card.pronunciationAudioURL)
+            } label: {
+                Label("Practice Pronunciation", systemImage: "mic")
+                    .font(.callout)
+            }
+            .buttonStyle(.bordered)
         }
     }
     // MARK: - Helpers
