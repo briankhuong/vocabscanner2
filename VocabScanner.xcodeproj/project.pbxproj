@@ -22,6 +22,7 @@
 		FA8088F52FF3B4A7006A5EF0 /* Secrets.plist in Resources */ = {isa = PBXBuildFile; fileRef = FA8088F42FF3B4A7006A5EF0 /* Secrets.plist */; };
 		FA8088F72FF4A52D006A5EF0 /* ClaudeWSD.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA8088F62FF4A52D006A5EF0 /* ClaudeWSD.swift */; };
 		FA8088F92FF4B1C9006A5EF0 /* APIWarmup.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA8088F82FF4B1C9006A5EF0 /* APIWarmup.swift */; };
+		FA8088FB2FF55904006A5EF0 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FA8088FA2FF55904006A5EF0 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -45,6 +46,7 @@
 		FA8088F42FF3B4A7006A5EF0 /* Secrets.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Secrets.plist; sourceTree = "<group>"; };
 		FA8088F62FF4A52D006A5EF0 /* ClaudeWSD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeWSD.swift; sourceTree = "<group>"; };
 		FA8088F82FF4B1C9006A5EF0 /* APIWarmup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIWarmup.swift; sourceTree = "<group>"; };
+		FA8088FA2FF55904006A5EF0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -56,6 +58,7 @@
 				FA293F422FF17321000160F2 /* ActivityLog.swift */,
 				FA293F402FF16BAA000160F2 /* ReviewSessionView.swift */,
 				FA293F372FF10244000160F2 /* AppMain.swift */,
+				FA8088FA2FF55904006A5EF0 /* Assets.xcassets */,
 				FA8088F82FF4B1C9006A5EF0 /* APIWarmup.swift */,
 				FA293F502FF36023000160F2 /* PronunciationService.swift */,
 				FA8088F42FF3B4A7006A5EF0 /* Secrets.plist */,
@@ -149,6 +152,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FA8088FB2FF55904006A5EF0 /* Assets.xcassets in Resources */,
 				FA8088F52FF3B4A7006A5EF0 /* Secrets.plist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -306,6 +310,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -343,6 +348,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
