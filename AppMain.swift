@@ -19,11 +19,18 @@ import NaturalLanguage
 // --------------------------------------------------
 @main
 struct VocabScannerApp: App {
+    @Environment(\.scenePhase) private var scenePhase  // ← this was missing
+
     var body: some Scene {
         WindowGroup {
             ContentView()
         }
-        .modelContainer(for: [Book.self, VocabCard.self, ActivityLog.self])
+        .modelContainer(for: [Book.self, VocabCard.self, ActivityLog.self])  // ← removed duplicate
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                APIWarmup.shared.warmUpAll()
+            }
+        }
     }
 }
 
@@ -1124,33 +1131,52 @@ struct SaveToCollectionView: View {
             // Try Merriam‑Webster first
             do {
                 if let mwResult = try await MerriamWebster.lookup(word: word),
-                   !mwResult.senses.isEmpty { // 👈 Check if senses is empty instead of definition
-                    
-                    let rankedSenses = rankSenses(mwResult.senses, contextSentence: itemsToSave[i].originalSentence, word: word, mode: dictionaryMode)
+                   !mwResult.senses.isEmpty {
+
+                    // Clear any stale isBestMatch flags before reordering
+                    var senses = mwResult.senses
+                    for j in senses.indices { senses[j].isBestMatch = false }
+
+                    // Primary path: ask LLM to pick the best sense using sentence context
+                    if let wsdResult = await LLMWSD.selectBestSense(
+                        word: word,
+                        sentence: itemsToSave[i].originalSentence,
+                        senses: senses
+                    ) {
+                        // Pull the winner out, flag it, reinsert at front
+                        var best = senses.remove(at: wsdResult.bestIndex)
+                        best.isBestMatch = wsdResult.confidence >= 0.75
+                        senses.insert(best, at: 0)
+                    } else {
+                        // Offline fallback: use local heuristic ranking
+                        print("[LLMWSD] Unavailable, falling back to local ranking")
+                        senses = rankSenses(senses,
+                                            contextSentence: itemsToSave[i].originalSentence,
+                                            word: word,
+                                            mode: dictionaryMode)
+                    }
+
                     await MainActor.run {
-                        // 1. Store ALL senses for the new multi-page UI
-                        itemsToSave[i].senses = rankedSenses
-                        
-                        // 2. Map the "Best Match" (the first sense) to the legacy fields for backwards compatibility
-                        if let bestSense = rankedSenses.first {
+                        itemsToSave[i].senses = senses
+
+                        if let bestSense = senses.first {
                             itemsToSave[i].definition = bestSense.definition
                             itemsToSave[i].dictionaryExample = bestSense.example
                             itemsToSave[i].wordType = bestSense.wordType
                             itemsToSave[i].registerLabel = bestSense.registerLabel
                             itemsToSave[i].pronunciationAudioURL = bestSense.pronunciationAudioURL
                         }
-                        
-                        // 3. Map global properties (these still apply to the whole word)
+
                         if let pron = mwResult.pronunciation {
                             itemsToSave[i].pronunciation = pron
                         } else {
                             itemsToSave[i].pronunciation = "N/A"
                         }
                         itemsToSave[i].origin = mwResult.origin
-                        
-                        print("[MW Debug] Successfully parsed and ranked \(rankedSenses.count) senses.")
+
+                        print("[MW Debug] Successfully resolved \(senses.count) senses.")
                     }
-                    continue  // success, skip fallback
+                    continue
                 }
             } catch {
                 print("Merriam‑Webster error: \(error)")
@@ -1294,12 +1320,22 @@ for sense in senses {
             // context-ambiguous words. Instead, compare each context content word's embedding
             // against each sense content word's embedding and take the best match per word —
             // this captures near-synonyms and inflections without requiring exact equality.
+            // B. Word-embedding-based content overlap.
             var keywordScore = 0.0
             if let wordEmbedding = embedding {
-                for cWord in contextWords {
+                // Exclude the word being looked up from context keywords — it matches
+                // every sense equally (all definitions are definitions *of* that word),
+                // so it contributes no discriminating signal, only noise.
+                let filteredContextWords = contextWords.filter {
+                    $0.lowercased() != word.lowercased()
+                }
+
+                for cWord in filteredContextWords {
                     guard let cVec = wordEmbedding.vector(for: cWord) else { continue }
                     var bestSim = 0.0
                     for sWord in senseWordsSet {
+                        // Also skip the target word inside sense vocabulary
+                        guard sWord.lowercased() != word.lowercased() else { continue }
                         guard let sVec = wordEmbedding.vector(for: sWord) else { continue }
                         let dot = zip(cVec, sVec).map(*).reduce(0, +)
                         let magA = sqrt(cVec.map { $0 * $0 }.reduce(0, +))
@@ -1308,15 +1344,16 @@ for sense in senses {
                         let cosine = dot / (magA * magB)
                         if cosine > bestSim { bestSim = cosine }
                     }
-                    // Only count meaningfully close matches; near-zero similarity is noise.
-                    if bestSim > 0.4 {
+                    // Raised from 0.4 to 0.65 — only count genuinely close semantic
+                    // matches (near-synonyms, inflected forms like flew/fly), not the
+                    // broad background similarity all English words share in embedding space.
+                    if bestSim > 0.65 {
                         let docFreq = Double(wordDocCount[cWord] ?? 1)
                         let idf = log(totalSenses / max(docFreq, 1))
                         keywordScore += bestSim * max(idf, 0.1)
                     }
                 }
             }
-
             // C. Semantic distance (cosine similarity) — raw, will be centered below
             var semanticScore = 0.0
             if let contextVec = contextEmbedding, let senseVec = embedding?.vector(for: senseText) {

@@ -20,6 +20,8 @@
 		FA293F512FF36023000160F2 /* PronunciationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA293F502FF36023000160F2 /* PronunciationService.swift */; };
 		FA293F532FF3603F000160F2 /* PronunciationPracticeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA293F522FF3603F000160F2 /* PronunciationPracticeView.swift */; };
 		FA8088F52FF3B4A7006A5EF0 /* Secrets.plist in Resources */ = {isa = PBXBuildFile; fileRef = FA8088F42FF3B4A7006A5EF0 /* Secrets.plist */; };
+		FA8088F72FF4A52D006A5EF0 /* ClaudeWSD.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA8088F62FF4A52D006A5EF0 /* ClaudeWSD.swift */; };
+		FA8088F92FF4B1C9006A5EF0 /* APIWarmup.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA8088F82FF4B1C9006A5EF0 /* APIWarmup.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -41,6 +43,8 @@
 		FA293F522FF3603F000160F2 /* PronunciationPracticeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PronunciationPracticeView.swift; sourceTree = "<group>"; };
 		FA293F542FF3606C000160F2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; name = Info.plist; path = VocabScanner/Info.plist; sourceTree = "<group>"; };
 		FA8088F42FF3B4A7006A5EF0 /* Secrets.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Secrets.plist; sourceTree = "<group>"; };
+		FA8088F62FF4A52D006A5EF0 /* ClaudeWSD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeWSD.swift; sourceTree = "<group>"; };
+		FA8088F82FF4B1C9006A5EF0 /* APIWarmup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIWarmup.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -52,8 +56,10 @@
 				FA293F422FF17321000160F2 /* ActivityLog.swift */,
 				FA293F402FF16BAA000160F2 /* ReviewSessionView.swift */,
 				FA293F372FF10244000160F2 /* AppMain.swift */,
+				FA8088F82FF4B1C9006A5EF0 /* APIWarmup.swift */,
 				FA293F502FF36023000160F2 /* PronunciationService.swift */,
 				FA8088F42FF3B4A7006A5EF0 /* Secrets.plist */,
+				FA8088F62FF4A52D006A5EF0 /* ClaudeWSD.swift */,
 				FA293F522FF3603F000160F2 /* PronunciationPracticeView.swift */,
 				FA293F4E2FF2221C000160F2 /* SpeechService.swift */,
 				FA293F4C2FF22042000160F2 /* MerriamWebster.swift */,
@@ -159,10 +165,12 @@
 				FA293F412FF16BAA000160F2 /* ReviewSessionView.swift in Sources */,
 				FA293F3F2FF16B9B000160F2 /* SM2Scheduler.swift in Sources */,
 				FA293F492FF180D4000160F2 /* VocabCardTransfer.swift in Sources */,
+				FA8088F72FF4A52D006A5EF0 /* ClaudeWSD.swift in Sources */,
 				FA293F382FF10244000160F2 /* AppMain.swift in Sources */,
 				FA293F4D2FF22042000160F2 /* MerriamWebster.swift in Sources */,
 				FA293F432FF17321000160F2 /* ActivityLog.swift in Sources */,
 				FA293F4F2FF2221C000160F2 /* SpeechService.swift in Sources */,
+				FA8088F92FF4B1C9006A5EF0 /* APIWarmup.swift in Sources */,
 				FA293F452FF1736B000160F2 /* ActivityLogger.swift in Sources */,
 				FA293F472FF17424000160F2 /* ActivityGridView.swift in Sources */,
 				FA293F512FF36023000160F2 /* PronunciationService.swift in Sources */,
