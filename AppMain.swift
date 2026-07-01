@@ -13,6 +13,8 @@ import Combine
 import Vision
 import Translation
 import NaturalLanguage
+import UIKit
+import UniformTypeIdentifiers
 
 // --------------------------------------------------
 // MARK: - App Entry
@@ -1016,6 +1018,11 @@ class WordBoxView: UIView {
     var isPhrase: Bool = false {
         didSet { updateAppearance() }
     }
+    /// Non-nil while this word is a pending pick in Merge Mode. The value
+    /// is its position in the phrase being built (1, 2, 3...).
+    var mergeOrder: Int? {
+        didSet { updateAppearance() }
+    }
     
     init(detectedWord: DetectedWord, frame: CGRect) {
         self.detectedWord = detectedWord
@@ -1027,22 +1034,60 @@ class WordBoxView: UIView {
     
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     
-    private func updateAppearance() {
-        if isSelectedWord {
-            backgroundColor = UIColor.yellow.withAlphaComponent(0.4)
-        } else {
-            backgroundColor = isPhrase ? UIColor.systemTeal.withAlphaComponent(0.15) : UIColor.clear
+    // In WordBoxView, replace the current border/background approach:
+    // In WordBoxView, replace the current border/background approach:
+    // In WordBoxView, replace the current border/background approach:
+        private func updateAppearance() {
+                backgroundColor = .clear
+                layer.borderWidth = 0
+                layer.sublayers?.forEach { $0.removeFromSuperlayer() }
+
+                let underline = CALayer()
+                // Sit right at the box's own bottom edge — the previous +1/+2
+                // offset is what made it feel "too far away" on boxes whose OCR
+                // frame already has built-in padding. Zero offset is the most
+                // consistent baseline across different box shapes.
+                underline.frame = CGRect(x: 0, y: bounds.height - 1, width: bounds.width, height: isSelectedWord ? 2.5 : 1)
+
+                if isSelectedWord {
+                    // Only the SELECTED state carries color meaning now — teal
+                    // for a phrase, yellow for a single word. Unselected boxes
+                    // are always the same faint white regardless of type, so
+                    // "faint teal" can no longer be mistaken for "selected."
+                    underline.backgroundColor = (isPhrase ? UIColor.systemTeal : UIColor.systemYellow).cgColor
+                } else {
+                    underline.backgroundColor = UIColor.white.withAlphaComponent(0.25).cgColor
+                }
+
+                layer.addSublayer(underline)
+
+                // Merge-mode badge: small numbered circle + light blue tint,
+                // shown only while this word is a pending pick for a phrase
+                // being built. This is visually distinct from normal selection.
+                guard let order = mergeOrder else { return }
+
+                backgroundColor = UIColor.systemBlue.withAlphaComponent(0.15)
+
+            let badgeSize: CGFloat = 13
+                        let badge = CALayer()
+                        badge.frame = CGRect(x: -4, y: -4, width: badgeSize, height: badgeSize)
+                        badge.backgroundColor = UIColor.systemBlue.cgColor
+                        badge.cornerRadius = badgeSize / 2
+                        layer.addSublayer(badge)
+
+                        let badgeLabel = CATextLayer()
+                        badgeLabel.string = "\(order)"
+                        badgeLabel.fontSize = 8
+                        badgeLabel.alignmentMode = .center
+                        // Vertically center the text within the small badge circle —
+                        // CATextLayer doesn't auto-center vertically like UILabel does.
+                        let textHeight: CGFloat = 9
+                        badgeLabel.frame = CGRect(x: badge.frame.minX, y: badge.frame.minY + (badgeSize - textHeight) / 2, width: badgeSize, height: textHeight)
+                        badgeLabel.foregroundColor = UIColor.white.cgColor
+                        badgeLabel.contentsScale = window?.screen.scale ?? traitCollection.displayScale
+                        layer.addSublayer(badgeLabel)
+            }
         }
-        
-        if isPhrase {
-            layer.borderColor = UIColor.systemTeal.withAlphaComponent(0.7).cgColor
-            layer.borderWidth = 2
-        } else {
-            layer.borderColor = isSelectedWord ? UIColor.yellow.cgColor : UIColor.gray.withAlphaComponent(0.3).cgColor
-            layer.borderWidth = 1
-        }
-    }
-}
 
 // --------------------------------------------------
 // MARK: - SaveToCollectionView
@@ -1127,7 +1172,13 @@ struct SaveToCollectionView: View {
     private func lookupDefinitionsAndPronunciations() async {
         for i in itemsToSave.indices {
             let word = itemsToSave[i].word.trimmingCharacters(in: .punctuationCharacters)
-            
+
+            // Phrases go straight to Llama — MW rarely has idioms/phrasal verbs
+            if word.contains(" ") {
+                await lookupPhraseWithLlama(for: i)
+                continue
+            }
+
             // Try Merriam‑Webster first
             do {
                 if let mwResult = try await MerriamWebster.lookup(word: word),
@@ -1293,7 +1344,7 @@ for sense in senses {
             let hasExample: Bool
         }
 
-        var rawScores: [RawScore] = senses.map { sense in
+        let rawScores: [RawScore] = senses.map { sense in
             let senseText = "\(sense.definition) \(sense.example ?? "")"
             let senseWordsSet = lemmatizedWords(from: senseText)
 
@@ -1420,6 +1471,114 @@ for (sense, score) in scored {
         return sortedSenses
     }
 
+    private func lookupPhraseWithLlama(for index: Int) async {
+        let phrase   = itemsToSave[index].word
+        let sentence = itemsToSave[index].originalSentence
+
+        guard
+            let url     = Bundle.main.url(forResource: "Secrets", withExtension: "plist"),
+            let dict    = NSDictionary(contentsOf: url) as? [String: Any],
+            let apiKey  = dict["LLM_API_KEY"]  as? String,
+            let baseURL = dict["LLM_BASE_URL"] as? String,
+            let model   = dict["LLM_MODEL"]    as? String,
+            let endpoint = URL(string: baseURL)
+        else { return }
+
+        let prompt = """
+                The user is reading an English book and found this phrase: "\(phrase)"
+                It appears in this sentence: "\(sentence)"
+
+                Figure out what kind of expression this is and explain it for a
+                vocabulary learner:
+                - If it's an idiom, phrasal verb, or other fixed expression, explain
+                  what it means.
+                - If it's a proper noun referring to something well-known — a person,
+                  place, event, organization, brand, title, etc. (e.g. "Boston
+                  Marathon", "Wall Street") — explain what it refers to.
+                - Otherwise, if it's neither a recognizable expression nor a
+                  well-known proper noun, reply: {"valid": false}
+
+                If valid, reply with this JSON:
+                {
+                  "valid": true,
+                  "definition": "<clear explanation in 1-2 sentences>",
+                  "example": "<a natural example sentence using it>",
+                  "wordType": "<idiom | phrasal verb | expression | proper noun>"
+                }
+                Reply ONLY with the JSON. No explanation.
+                """
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json",  forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 12
+
+        let body: [String: Any] = [
+                    "model": model,
+                    "max_tokens": 260,
+                    "temperature": 0,
+                    "messages": [["role": "user", "content": prompt]]
+                ]
+
+        guard let httpBody = try? JSONSerialization.data(withJSONObject: body) else { return }
+        request.httpBody = httpBody
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return }
+
+            guard
+                let json    = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let choices = json["choices"] as? [[String: Any]],
+                let message = choices.first?["message"] as? [String: Any],
+                let text    = message["content"] as? String
+            else { return }
+
+            let cleaned = text
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "```json", with: "")
+                .replacingOccurrences(of: "```", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard
+                let resultData = cleaned.data(using: .utf8),
+                let result     = try? JSONSerialization.jsonObject(with: resultData) as? [String: Any]
+            else { return }
+
+            guard result["valid"] as? Bool == true else {
+                await MainActor.run {
+                    itemsToSave[index].definition = "⚠️ Not a recognized phrase. Try selecting individual words."
+                    itemsToSave[index].pronunciation = ""
+                }
+                return
+            }
+
+            let definition = result["definition"] as? String ?? ""
+            let example    = result["example"]    as? String ?? ""
+            let wordType   = result["wordType"]   as? String
+
+            let sense = DictionarySense(
+                definition: definition,
+                example: example.isEmpty ? nil : example,
+                wordType: wordType,
+                registerLabel: nil,
+                pronunciationAudioURL: nil,
+                isBestMatch: true
+            )
+
+            await MainActor.run {
+                itemsToSave[index].senses             = [sense]
+                itemsToSave[index].definition         = definition
+                itemsToSave[index].dictionaryExample  = example.isEmpty ? nil : example
+                itemsToSave[index].wordType           = wordType
+                itemsToSave[index].pronunciation      = ""
+                print("[Phrase] '\(phrase)': \(definition.prefix(60))")
+            }
+        } catch {
+            print("[Phrase] Llama error: \(error)")
+        }
+    }
 
     private func lookupFreeDictionary(for index: Int) async {
         let word = itemsToSave[index].word.lowercased().trimmingCharacters(in: .punctuationCharacters)
@@ -1831,15 +1990,194 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
     private var wordScrollView: UIScrollView!
     private var wordStackView: UIStackView!
     private var selectedWords: [DetectedWord] = []
+        private var allDetectedWords: [DetectedWord] = []
+
+        // Merge Mode (Option A): tapping words while active adds them to a
+        // pending phrase (with an order badge) instead of selecting them for
+        // saving. Confirming combines exactly those words, in tap order.
+    private var isMergeModeActive = false
+        private var pendingMergeSelections: [(word: DetectedWord, box: WordBoxView)] = []
+        private var mergeModeButton: UIButton!
+        private var combineButton: UIButton!
+        private var mergePreviewLabel: UILabel!
     
     override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = .black
-        setupScrollView()
-        setupImageView()
-        setupBottomBar()
-        runOCR()
-    }
+            super.viewDidLoad()
+            view.backgroundColor = .black
+            setupScrollView()
+            setupImageView()
+            setupBottomBar()
+            runOCR()
+            setupHintLabel()
+            setupMergeControls()
+        }
+    private func setupHintLabel() {
+            let hint = UILabel()
+            hint.text = "Tap to select · Use Merge Words to combine · Long-press phrase to split"
+        hint.font = .systemFont(ofSize: 11, weight: .medium)
+        hint.textColor = .white
+        hint.textAlignment = .center
+        hint.backgroundColor = UIColor.black.withAlphaComponent(0.45)
+        hint.layer.cornerRadius = 8
+        hint.clipsToBounds = true
+        hint.translatesAutoresizingMaskIntoConstraints = false
+                view.addSubview(hint)
+
+                NSLayoutConstraint.activate([
+                    hint.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+                    hint.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                    hint.heightAnchor.constraint(equalToConstant: 28),
+                    hint.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -32)
+                ])
+            }
+
+            /// Rebuilds the live "word + word + word" preview strip shown while
+            /// picking words in Merge Mode, so the user can visually confirm the
+            /// phrase being built without losing track of small on-image badges.
+            private func updateMergePreview() {
+                guard !pendingMergeSelections.isEmpty else {
+                    mergePreviewLabel.isHidden = true
+                    return
+                }
+                let text = pendingMergeSelections.map { $0.word.text }.joined(separator: "  +  ")
+                mergePreviewLabel.text = "  \(text)  "
+                mergePreviewLabel.isHidden = false
+            }
+
+            private func setupMergeControls() {
+                mergeModeButton = UIButton(type: .system)
+                        var mergeModeConfig = UIButton.Configuration.plain()
+                        mergeModeConfig.title = "Merge Words"
+                        mergeModeConfig.baseForegroundColor = .white
+                        mergeModeConfig.background.backgroundColor = UIColor.black.withAlphaComponent(0.45)
+                        mergeModeConfig.background.cornerRadius = 14
+                        mergeModeConfig.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 14, bottom: 6, trailing: 14)
+                        mergeModeButton.configuration = mergeModeConfig
+                        mergeModeButton.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
+                        mergeModeButton.translatesAutoresizingMaskIntoConstraints = false
+                        mergeModeButton.addTarget(self, action: #selector(toggleMergeMode), for: .touchUpInside)
+                        view.addSubview(mergeModeButton)
+
+                        combineButton = UIButton(type: .system)
+                        var combineConfig = UIButton.Configuration.plain()
+                        combineConfig.title = "Combine (0)"
+                        combineConfig.baseForegroundColor = .white
+                        combineConfig.background.backgroundColor = UIColor.systemBlue
+                        combineConfig.background.cornerRadius = 14
+                        combineConfig.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 14, bottom: 6, trailing: 14)
+                        combineButton.configuration = combineConfig
+                        combineButton.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
+                        combineButton.translatesAutoresizingMaskIntoConstraints = false
+                        combineButton.addTarget(self, action: #selector(confirmMerge), for: .touchUpInside)
+                        combineButton.isHidden = true
+                        view.addSubview(combineButton)
+
+                mergePreviewLabel = UILabel()
+                                mergePreviewLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+                                mergePreviewLabel.textColor = .white
+                                mergePreviewLabel.textAlignment = .center
+                                mergePreviewLabel.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.85)
+                                mergePreviewLabel.layer.cornerRadius = 10
+                                mergePreviewLabel.clipsToBounds = true
+                                mergePreviewLabel.numberOfLines = 1
+                                mergePreviewLabel.adjustsFontSizeToFitWidth = true
+                                mergePreviewLabel.minimumScaleFactor = 0.6
+                                mergePreviewLabel.isHidden = true
+                                mergePreviewLabel.translatesAutoresizingMaskIntoConstraints = false
+                                view.addSubview(mergePreviewLabel)
+
+                                NSLayoutConstraint.activate([
+                                    mergeModeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 48),
+                                    mergeModeButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+                                    mergeModeButton.heightAnchor.constraint(equalToConstant: 32),
+
+                                    combineButton.centerYAnchor.constraint(equalTo: mergeModeButton.centerYAnchor),
+                                    combineButton.trailingAnchor.constraint(equalTo: mergeModeButton.leadingAnchor, constant: -8),
+                                    combineButton.heightAnchor.constraint(equalToConstant: 32),
+
+                                    mergePreviewLabel.topAnchor.constraint(equalTo: mergeModeButton.bottomAnchor, constant: 8),
+                                    mergePreviewLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+                                    mergePreviewLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
+                                    mergePreviewLabel.heightAnchor.constraint(equalToConstant: 30)
+                                ])
+                            }
+    @objc private func toggleMergeMode() {
+            if isMergeModeActive {
+                // Button doubles as Cancel while merge mode is active.
+                resetMergeMode()
+            } else {
+                isMergeModeActive = true
+                mergeModeButton.configuration?.title = "Cancel Merge"
+                mergeModeButton.configuration?.background.backgroundColor = UIColor.systemRed.withAlphaComponent(0.85)
+                combineButton.isHidden = false
+                updateMergePreview()
+            }
+        }
+    private func resetMergeMode() {
+            isMergeModeActive = false
+            mergeModeButton.configuration?.title = "Merge Words"
+            mergeModeButton.configuration?.background.backgroundColor = UIColor.black.withAlphaComponent(0.45)
+            combineButton.isHidden = true
+            combineButton.configuration?.title = "Combine (0)"
+            for entry in pendingMergeSelections {
+                entry.box.mergeOrder = nil
+            }
+            pendingMergeSelections.removeAll()
+            mergePreviewLabel.isHidden = true
+        }
+
+            private func handleMergeModeTap(on boxView: WordBoxView) {
+                // Tapping an already-picked word removes it and renumbers the rest,
+                // so the badges always read as a clean, contiguous sequence.
+                if let idx = pendingMergeSelections.firstIndex(where: { $0.box === boxView }) {
+                            pendingMergeSelections.remove(at: idx)
+                            boxView.mergeOrder = nil
+                            for (i, entry) in pendingMergeSelections.enumerated() {
+                                entry.box.mergeOrder = i + 1
+                            }
+                            combineButton.configuration?.title = "Combine (\(pendingMergeSelections.count))"
+                            updateMergePreview()
+                            return
+                        }
+
+                // Keep merges within a single sentence — avoids accidentally
+                // stitching together words that were never actually adjacent.
+                if let firstSentence = pendingMergeSelections.first?.word.contextSentence,
+                   boxView.detectedWord.contextSentence != firstSentence {
+                    let alert = UIAlertController(
+                        title: "Different sentence",
+                        message: "You can only combine words from the same sentence.",
+                        preferredStyle: .alert
+                    )
+                    alert.addAction(UIAlertAction(title: "OK", style: .default))
+                    present(alert, animated: true)
+                    return
+                }
+
+                pendingMergeSelections.append((boxView.detectedWord, boxView))
+                        boxView.mergeOrder = pendingMergeSelections.count
+                        combineButton.configuration?.title = "Combine (\(pendingMergeSelections.count))"
+                        updateMergePreview()
+                    }
+
+            @objc private func confirmMerge() {
+                guard pendingMergeSelections.count >= 2 else {
+                    let alert = UIAlertController(
+                        title: "Pick at least 2 words",
+                        message: "Tap 2 or more words to combine into a phrase.",
+                        preferredStyle: .alert
+                    )
+                    alert.addAction(UIAlertAction(title: "OK", style: .default))
+                    present(alert, animated: true)
+                    return
+                }
+
+                // Combine in the order the user tapped them — this is the phrase
+                // order they intended, which may not always match left-to-right.
+                let orderedBoxes = pendingMergeSelections.map { $0.box }
+                mergeBoxes(orderedBoxes)
+                resetMergeMode()
+            }
     
     private func updateSelectedLabel() {
         wordStackView.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -1897,11 +2235,15 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
         imageView.frame = scrollView.bounds
         scrollView.addSubview(imageView)
         scrollView.contentSize = imageView.bounds.size
-        
+
         overlayView = UIView()
-        overlayView.isUserInteractionEnabled = true
-        imageView.addSubview(overlayView)
-    }
+                overlayView.isUserInteractionEnabled = true
+                imageView.addSubview(overlayView)
+                // Swipe-to-merge has been replaced by tap-based Merge Mode (see
+                // toggleMergeMode/handleMergeModeTap) — it was unreliable because
+                // OCR box edges don't always line up precisely with the visible
+                // text, especially on tilted photos.
+            }
     
     private func setupBottomBar() {
         bottomBar = UIView()
@@ -1973,14 +2315,15 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
     }
     
     private func runOCR() {
-        WordDetector.recognizeWords(in: image) { [weak self] words in
-            guard let self = self else { return }
-            let enrichedWords = self.detectPhrases(from: words)
-            DispatchQueue.main.async {
-                self.drawWordBoxes(enrichedWords)
+            WordDetector.recognizeWords(in: image) { [weak self] words in
+                guard let self = self else { return }
+                let orderedWords = self.orderWords(from: words)
+                DispatchQueue.main.async {
+                    self.allDetectedWords = orderedWords  // ← store for merge/split
+                    self.drawWordBoxes(orderedWords)
+                }
             }
         }
-    }
     
     private func drawWordBoxes(_ words: [DetectedWord]) {
         overlayView.subviews.forEach { $0.removeFromSuperview() }
@@ -1993,183 +2336,177 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
             let y = (1 - box.origin.y - box.height) * displayedRect.height
             let width = box.width * displayedRect.width
             let height = box.height * displayedRect.height
-            
+
             let rect = CGRect(x: x, y: y, width: width, height: height)
             let boxView = WordBoxView(detectedWord: word, frame: rect)
-            
+
             boxView.isPhrase = word.isPhrase
             let tap = UITapGestureRecognizer(target: self, action: #selector(wordTapped(_:)))
             boxView.addGestureRecognizer(tap)
+
+            // Long-press on any phrase box to split it
+            if word.isPhrase {
+                let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleSplit(_:)))
+                boxView.addGestureRecognizer(longPress)
+            }
+
             overlayView.addSubview(boxView)
         }
     }
-    private func detectPhrases(from words: [DetectedWord]) -> [DetectedWord] {
-        // Group words by their contextSentence
-        var grouped: [String: [DetectedWord]] = [:]
-        for word in words {
-            grouped[word.contextSentence, default: []].append(word)
-        }
-
-        // Order sentences by the earliest word (top‑to‑bottom, left‑to‑right)
-        var sentenceOrder: [(sentence: String, minY: CGFloat, minX: CGFloat)] = []
-        for (sentence, wordList) in grouped {
-            let sorted = wordList.sorted { $0.boundingBox.minX < $1.boundingBox.minX }
-            let first = sorted.first!
-            sentenceOrder.append((sentence, first.boundingBox.minY, first.boundingBox.minX))
-        }
-        sentenceOrder.sort {
-            if abs($0.minY - $1.minY) > 0.005 { return $0.minY > $1.minY }
-            else { return $0.minX < $1.minX }
-        }
-
-        // Common particles used in phrasal verbs (e.g. "fly out", "give up", "look after")
-        let phrasalParticles: Set<String> = [
-            "out", "up", "off", "in", "away", "down", "on", "over",
-            "through", "back", "around", "along", "about", "into",
-            "onto", "after", "across", "by", "forward", "apart"
-        ]
-
-        var finalWords: [DetectedWord] = []
-
-        for (sentence, _, _) in sentenceOrder {
-            var wordList = grouped[sentence]!
-            wordList.sort { $0.boundingBox.minX < $1.boundingBox.minX }
-
-            let tagger = NSLinguisticTagger(tagSchemes: [.lexicalClass, .nameType], options: 0)
-            tagger.string = sentence
-
-            // Ranges of phrases in terms of UTF‑16 offsets (NSRange)
-            var phraseRanges: [NSRange] = []
-
-            // 1. Named entities
-            tagger.enumerateTags(in: NSRange(location: 0, length: sentence.utf16.count),
-                                 scheme: .nameType,
-                                 options: [.joinNames]) { tag, tokenRange, _, _ in
-                if tag != nil {
-                    phraseRanges.append(tokenRange)
-                }
-            }
-
-            // Tokenize into words, keeping both the string and the NSRange
-            let tokenizer = NLTokenizer(unit: .word)
-            tokenizer.string = sentence
-            var tokens: [(string: String, range: NSRange)] = []
-            tokenizer.enumerateTokens(in: sentence.startIndex..<sentence.endIndex) { range, _ in
-                let str = String(sentence[range])
-                let nsRange = NSRange(range, in: sentence)
-                tokens.append((str, nsRange))
-                return true
-            }
-
-            func tag(forTokenAt index: Int) -> NSLinguisticTag? {
-                let location = tokens[index].range.location
-                return tagger.tag(at: location, scheme: .lexicalClass, tokenRange: nil, sentenceRange: nil)
-            }
-
-            // 2. Noun phrases (consecutive Nouns / Adjectives)
-            var i = 0
-            while i < tokens.count {
-                let currentTag = tag(forTokenAt: i)
-                if currentTag == .noun || currentTag == .adjective {
-                    let start = i
-                    i += 1
-                    while i < tokens.count {
-                        let nextTag = tag(forTokenAt: i)
-                        if nextTag == .noun || nextTag == .adjective {
-                            i += 1
-                        } else {
-                            break
-                        }
-                    }
-                    if i - start > 1 {
-                        let startLocation = tokens[start].range.location
-                        let endLocation = tokens[i - 1].range.location + tokens[i - 1].range.length
-                        let phraseRange = NSRange(location: startLocation, length: endLocation - startLocation)
-                        phraseRanges.append(phraseRange)
-                    }
-                } else {
-                    i += 1
-                }
-            }
-
-            // 3. Phrasal verbs (Verb immediately followed by a known particle)
-            var j = 0
-            while j < tokens.count {
-                let currentTag = tag(forTokenAt: j)
-                if currentTag == .verb, j + 1 < tokens.count {
-                    let nextWordLower = tokens[j + 1].string.lowercased()
-                    if phrasalParticles.contains(nextWordLower) {
-                        let startLocation = tokens[j].range.location
-                        let endLocation = tokens[j + 1].range.location + tokens[j + 1].range.length
-                        let phraseRange = NSRange(location: startLocation, length: endLocation - startLocation)
-                        phraseRanges.append(phraseRange)
-                        j += 2
-                        continue
-                    }
-                }
-                j += 1
-            }
-
-            // 4. Merge words that are covered by phrase ranges
-            var mergedWords: [DetectedWord] = []
-            var coveredIndices = Set<Int>()
-
-            for phraseRange in phraseRanges {
-                guard let phraseTextRange = Range(phraseRange, in: sentence) else { continue }
-                let phraseText = String(sentence[phraseTextRange])
-                let phraseWords = phraseText.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
-
-                guard phraseWords.count <= wordList.count, phraseWords.count > 0 else { continue }
-                for startIdx in 0...(wordList.count - phraseWords.count) {
-                    let slice = wordList[startIdx..<startIdx + phraseWords.count].map { $0.text }
-                    if slice == phraseWords {
-                        for idx in startIdx..<startIdx + phraseWords.count {
-                            coveredIndices.insert(idx)
-                        }
-                        let mergedBox = wordList[startIdx].boundingBox.union(
-                            wordList[startIdx + phraseWords.count - 1].boundingBox)
-
-                        let phraseWord = DetectedWord(
-                            text: phraseText,
-                            boundingBox: mergedBox,
-                            contextSentence: sentence,
-                            isPhrase: true,
-                            phraseComponents: phraseWords
-                        )
-                        mergedWords.append(phraseWord)
-                        break
-                    }
-                }
-            }
-
-            // Add words not covered by any phrase
-            for (idx, word) in wordList.enumerated() {
-                if !coveredIndices.contains(idx) {
-                    mergedWords.append(word)
-                }
-            }
-
-            // Keep left‑to‑right order within the sentence
-            mergedWords.sort { $0.boundingBox.minX < $1.boundingBox.minX }
-            finalWords.append(contentsOf: mergedWords)
-        }
-
-        return finalWords
-    }
-
     
-    @objc private func wordTapped(_ gesture: UITapGestureRecognizer) {
-        guard let boxView = gesture.view as? WordBoxView else { return }
-        let word = boxView.detectedWord
+    /// Auto phrase-detection has been removed — phrases are now created
+        /// exclusively by the user via swipe-to-merge. This just orders the
+        /// raw OCR words in natural reading order (top-to-bottom by sentence
+        /// group, then left-to-right within each group) with no merging.
+        private func orderWords(from words: [DetectedWord]) -> [DetectedWord] {
+            var grouped: [String: [DetectedWord]] = [:]
+            for word in words {
+                grouped[word.contextSentence, default: []].append(word)
+            }
 
-        boxView.isSelectedWord.toggle()
-        if boxView.isSelectedWord {
-            selectedWords.append(word)
-        } else {
-            selectedWords.removeAll { $0.id == word.id }
+            var sentenceOrder: [(sentence: String, minY: CGFloat, minX: CGFloat)] = []
+            for (sentence, wordList) in grouped {
+                let sorted = wordList.sorted { $0.boundingBox.minX < $1.boundingBox.minX }
+                let first = sorted.first!
+                sentenceOrder.append((sentence, first.boundingBox.minY, first.boundingBox.minX))
+            }
+            sentenceOrder.sort {
+                if abs($0.minY - $1.minY) > 0.005 { return $0.minY > $1.minY }
+                else { return $0.minX < $1.minX }
+            }
+
+            var finalWords: [DetectedWord] = []
+            for (sentence, _, _) in sentenceOrder {
+                let wordList = grouped[sentence]!.sorted { $0.boundingBox.minX < $1.boundingBox.minX }
+                finalWords.append(contentsOf: wordList)
+            }
+            return finalWords
         }
-        updateSelectedLabel()
+
+    // MARK: - Merge (swipe) and Split (long-press)
+
+    private func boundingBoxFrame(for box: CGRect) -> CGRect {
+        let displayedRect = AVMakeRect(aspectRatio: image.size, insideRect: imageView.bounds)
+        return CGRect(
+            x: box.origin.x * displayedRect.width,
+            y: (1 - box.origin.y - box.height) * displayedRect.height,
+            width: box.width  * displayedRect.width,
+            height: box.height * displayedRect.height
+        )
     }
+
+
+    private func mergeBoxes(_ boxes: [WordBoxView]) {
+            let words = boxes.map { $0.detectedWord }
+            let mergedText = words.map { $0.text }.joined(separator: " ")
+            let mergedBBox = words.map { $0.boundingBox }.reduce(words[0].boundingBox) { $0.union($1) }
+            let sentence   = words[0].contextSentence
+
+            // If any of the words being merged were already individually
+            // selected, drop them from selectedWords — they're being replaced
+            // by the merged phrase below, so we don't want stale duplicates.
+            let mergedIds = Set(words.map { $0.id })
+            selectedWords.removeAll { mergedIds.contains($0.id) }
+
+            let mergedWord = DetectedWord(
+                text: mergedText,
+                boundingBox: mergedBBox,
+                contextSentence: sentence,
+                isPhrase: true,
+                phraseComponents: words.map { $0.text }
+            )
+
+            boxes.forEach { $0.removeFromSuperview() }
+
+            let frame = boundingBoxFrame(for: mergedBBox)
+            let newBox = WordBoxView(detectedWord: mergedWord, frame: frame)
+            newBox.isPhrase = true
+
+            let tap = UITapGestureRecognizer(target: self, action: #selector(wordTapped(_:)))
+            newBox.addGestureRecognizer(tap)
+            let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleSplit(_:)))
+            newBox.addGestureRecognizer(longPress)
+
+            overlayView.addSubview(newBox)
+
+            // Combining is itself a selection gesture — mark the new phrase
+            // as selected immediately (shows the underline) and add it to the
+            // save list, rather than leaving it unselected.
+            newBox.isSelectedWord = true
+            selectedWords.append(mergedWord)
+            updateSelectedLabel()
+        }
+
+    @objc private func handleSplit(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began,
+              let box = gesture.view as? WordBoxView,
+              box.detectedWord.isPhrase,
+              let components = box.detectedWord.phraseComponents else { return }
+
+        let alert = UIAlertController(
+            title: "Split phrase?",
+            message: "\"\(box.detectedWord.text)\" → \(components.joined(separator: " + "))",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Split", style: .destructive) { _ in
+            self.splitBox(box)
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    private func splitBox(_ phraseBox: WordBoxView) {
+        guard let components = phraseBox.detectedWord.phraseComponents else { return }
+        let sentence   = phraseBox.detectedWord.contextSentence
+        let totalWidth = phraseBox.frame.width
+        let charCount  = components.map { $0.count }.reduce(0, +)
+        let displayedRect = AVMakeRect(aspectRatio: image.size, insideRect: imageView.bounds)
+
+        phraseBox.removeFromSuperview()
+        var currentX = phraseBox.frame.minX
+
+        for component in components {
+            let proportion = CGFloat(component.count) / CGFloat(max(charCount, 1))
+            let wordWidth  = totalWidth * proportion
+            let wordFrame  = CGRect(
+                x: currentX, y: phraseBox.frame.minY,
+                width: wordWidth, height: phraseBox.frame.height
+            )
+            let normBox = CGRect(
+                x: wordFrame.minX / displayedRect.width,
+                y: 1 - (wordFrame.minY / displayedRect.height) - (wordFrame.height / displayedRect.height),
+                width: wordFrame.width  / displayedRect.width,
+                height: wordFrame.height / displayedRect.height
+            )
+            let word = DetectedWord(
+                text: component, boundingBox: normBox,
+                contextSentence: sentence, isPhrase: false
+            )
+            let newBox = WordBoxView(detectedWord: word, frame: wordFrame)
+            let tap = UITapGestureRecognizer(target: self, action: #selector(wordTapped(_:)))
+            newBox.addGestureRecognizer(tap)
+            overlayView.addSubview(newBox)
+            currentX += wordWidth
+        }
+    }
+
+    @objc private func wordTapped(_ gesture: UITapGestureRecognizer) {
+            guard let boxView = gesture.view as? WordBoxView else { return }
+
+            if isMergeModeActive {
+                handleMergeModeTap(on: boxView)
+                return
+            }
+
+            let word = boxView.detectedWord
+            boxView.isSelectedWord.toggle()
+            if boxView.isSelectedWord {
+                selectedWords.append(word)
+            } else {
+                selectedWords.removeAll { $0.id == word.id }
+            }
+            updateSelectedLabel()
+        }
     
     @objc private func clearSelection() {
         selectedWords.removeAll()
@@ -2216,119 +2553,112 @@ struct DetectedWord: Identifiable {
 
 final class WordDetector {
     static func recognizeWords(in image: UIImage, completion: @escaping ([DetectedWord]) -> Void) {
-        guard let cgImage = image.cgImage else {
-            completion([])
-            return
-        }
+        guard let cgImage = image.cgImage else { completion([]); return }
 
         let orientation = CGImagePropertyOrientation(image.imageOrientation)
         let request = VNRecognizeTextRequest { request, error in
-            guard let observations = request.results as? [VNRecognizedTextObservation], error == nil else {
-                completion([])
-                return
-            }
+            guard let observations = request.results as? [VNRecognizedTextObservation],
+                  error == nil else { completion([]); return }
 
-            // 1. Build lines with text and bounding boxes
-            var lines: [(text: String, box: CGRect)] = []
+            // ── Step 1: pair each observation with its top candidate, sort top→bottom ──
+            var obsLines: [(candidate: VNRecognizedText, text: String, box: CGRect)] = []
             for obs in observations {
                 guard let candidate = obs.topCandidates(1).first else { continue }
                 let line = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !line.isEmpty {
-                    lines.append((text: line, box: obs.boundingBox))
-                }
+                if !line.isEmpty { obsLines.append((candidate, line, obs.boundingBox)) }
             }
-
-            // 2. Sort lines top-to-bottom, left-to-right
-            lines.sort {
+            obsLines.sort {
                 if abs($0.box.minY - $1.box.minY) > 0.005 { return $0.box.minY > $1.box.minY }
-                else { return $0.box.minX < $1.box.minX }
+                return $0.box.minX < $1.box.minX
             }
 
-            // 3. Build full text and tokenize into sentences
-            // Insert paragraph breaks between lines with a large vertical gap,
-            // so unrelated text blocks (e.g. toolbar UI vs. body paragraph)
-            // don't get merged into a single "sentence" by the tokenizer.
+            // ── Step 2: build full text & sentence map (unchanged logic) ──────────────
             var fullTextBuilder = ""
-            for (i, line) in lines.enumerated() {
+            for (i, item) in obsLines.enumerated() {
                 if i > 0 {
-                    let prevY = lines[i - 1].box.minY
-                    let gap = abs(prevY - line.box.minY)
+                    let gap = abs(obsLines[i-1].box.minY - item.box.minY)
                     fullTextBuilder += gap > 0.03 ? "\n\n" : " "
                 }
-                fullTextBuilder += line.text
+                fullTextBuilder += item.text
             }
             let fullText = fullTextBuilder
-            let tokenizer = NLTokenizer(unit: .sentence)
-            tokenizer.string = fullText
+
+            let sentenceTokenizer = NLTokenizer(unit: .sentence)
+            sentenceTokenizer.string = fullText
             var sentenceRanges: [Range<String.Index>] = []
-            tokenizer.enumerateTokens(in: fullText.startIndex..<fullText.endIndex) { range, _ in
-                sentenceRanges.append(range)
-                return true
+            sentenceTokenizer.enumerateTokens(in: fullText.startIndex..<fullText.endIndex) { r, _ in
+                sentenceRanges.append(r); return true
             }
             let sentences = sentenceRanges.map { String(fullText[$0]) }
 
-            // 4. Map each line to a sentence by character-position overlap
-            // First, recompute the character range each line occupies in fullText
-            var lineRanges: [Range<String.Index>] = []
+            // Map each line to the sentence it overlaps most
             var cursor = fullText.startIndex
-            for line in lines {
-                guard let lineRange = fullText.range(of: line.text, range: cursor..<fullText.endIndex) else {
+            var lineRanges: [Range<String.Index>] = []
+            for item in obsLines {
+                if let r = fullText.range(of: item.text, range: cursor..<fullText.endIndex) {
+                    lineRanges.append(r); cursor = r.upperBound
+                } else {
                     lineRanges.append(cursor..<cursor)
-                    continue
                 }
-                lineRanges.append(lineRange)
-                cursor = lineRange.upperBound
             }
-
-            var lineSentenceMap = [Int](repeating: 0, count: lines.count)
+            var lineSentenceMap = [Int](repeating: 0, count: obsLines.count)
             for (i, lineRange) in lineRanges.enumerated() {
-                var bestIdx = 0
-                var bestOverlap = 0
+                var bestIdx = 0; var bestOverlap = 0
                 for (idx, sentRange) in sentenceRanges.enumerated() {
-                    let overlapStart = max(lineRange.lowerBound, sentRange.lowerBound)
-                    let overlapEnd = min(lineRange.upperBound, sentRange.upperBound)
-                    if overlapStart < overlapEnd {
-                        let overlapLength = fullText.distance(from: overlapStart, to: overlapEnd)
-                        if overlapLength > bestOverlap {
-                            bestOverlap = overlapLength
-                            bestIdx = idx
-                        }
+                    let oStart = max(lineRange.lowerBound, sentRange.lowerBound)
+                    let oEnd   = min(lineRange.upperBound, sentRange.upperBound)
+                    if oStart < oEnd {
+                        let len = fullText.distance(from: oStart, to: oEnd)
+                        if len > bestOverlap { bestOverlap = len; bestIdx = idx }
                     }
                 }
                 lineSentenceMap[i] = bestIdx
             }
 
-            // 5. Split lines into words, assign correct sentence
+            // ── Step 3: use Vision's tight per-word boxes ──────────────────────────────
+            // This is what Photos app does — instead of guessing word positions by
+            // character proportion, we ask Vision for the exact bounding box it
+            // already computed for each word token during recognition.
             var results: [DetectedWord] = []
-            for (lineIdx, line) in lines.enumerated() {
-                let wordsInLine = line.text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
-                let totalChars = wordsInLine.reduce(0) { $0 + $1.count }
-                var currentX: CGFloat = 0
-                for word in wordsInLine {
-                    let proportion = CGFloat(word.count) / CGFloat(totalChars)
-                    let wordWidth = line.box.width * proportion
-                    let wordHeight = line.box.height
-                    let wordX = line.box.origin.x + currentX
-                    let wordY = line.box.origin.y
-                    let wordBox = CGRect(x: wordX, y: wordY, width: wordWidth, height: wordHeight)
 
-                    let sentenceIndex = lineSentenceMap[lineIdx]
-                    let contextSentence = sentences.indices.contains(sentenceIndex) ? sentences[sentenceIndex] : line.text
+            for (lineIdx, item) in obsLines.enumerated() {
+                let sentenceIndex = lineSentenceMap[lineIdx]
+                let contextSentence = sentences.indices.contains(sentenceIndex)
+                    ? sentences[sentenceIndex] : item.text
 
-                    results.append(DetectedWord(text: word, boundingBox: wordBox, contextSentence: contextSentence,
-                                                isPhrase: false, phraseComponents: nil))
-                    currentX += wordWidth
+                // Tokenize the candidate string into word-level ranges
+                let wordTokenizer = NLTokenizer(unit: .word)
+                wordTokenizer.string = item.candidate.string
+
+                wordTokenizer.enumerateTokens(
+                    in: item.candidate.string.startIndex..<item.candidate.string.endIndex
+                ) { tokenRange, _ in
+                    let wordText = String(item.candidate.string[tokenRange])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !wordText.isEmpty else { return true }
+
+                    // ← THE KEY CALL: Vision gives us the tight ink-level box for
+                    //   this exact substring, same data the Photos app uses.
+                    if let wordRect = try? item.candidate.boundingBox(for: tokenRange) {
+                        results.append(DetectedWord(
+                            text: wordText,
+                            boundingBox: wordRect.boundingBox,   // normalized CGRect
+                            contextSentence: contextSentence,
+                            isPhrase: false,
+                            phraseComponents: nil
+                        ))
+                    }
+                    return true
                 }
             }
 
-            // Sort final results top-to-bottom, left-to-right
+            // Sort top-to-bottom, left-to-right
             results.sort { w1, w2 in
                 let y1 = w1.boundingBox.origin.y + w1.boundingBox.height
                 let y2 = w2.boundingBox.origin.y + w2.boundingBox.height
                 if abs(y1 - y2) > 0.01 { return y1 > y2 }
                 return w1.boundingBox.origin.x < w2.boundingBox.origin.x
             }
-
             completion(results)
         }
 
@@ -2336,9 +2666,7 @@ final class WordDetector {
         request.usesLanguageCorrection = false
 
         let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
-        DispatchQueue.global(qos: .userInitiated).async {
-            try? handler.perform([request])
-        }
+        DispatchQueue.global(qos: .userInitiated).async { try? handler.perform([request]) }
     }
 }
 
