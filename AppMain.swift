@@ -1330,15 +1330,15 @@ struct SaveToCollectionView: View {
         }
 
         // ── Free dictionary fallback (6s timeout) ─────────────────────────────
-        do {
-            try await withTimeout(seconds: 6) {
-                await self.lookupFreeDictionary(for: i)
+                do {
+                    try await withTimeout(seconds: 6) {
+                        await self.lookupFreeDictionary(for: i)
+                    }
+                } catch {
+                    print("[FreeDictionary] Timeout for '\(word)', falling back to Llama")
+                    await lookupWordWithLlama(for: i)
+                }
             }
-        } catch {
-            await setFallbackDefinition(for: i)
-            print("[FreeDictionary] Timeout for '\(word)'")
-        }
-    }
     private func rankSenses(_ senses: [DictionarySense], contextSentence: String, word: String, mode: String) -> [DictionarySense] {
         guard !senses.isEmpty else { return [] }
 
@@ -1572,7 +1572,129 @@ for (sense, score) in scored {
 #endif
         return sortedSenses
     }
+    /// Last-resort fallback when both Merriam-Webster and the free dictionary
+        /// API fail to return a definition. Mirrors lookupPhraseWithLlama's
+        /// request shape, but asks for a plain word definition instead of an
+        /// idiom/proper-noun explanation.
+        private func lookupWordWithLlama(for index: Int) async {
+            let word     = itemsToSave[index].word.trimmingCharacters(in: .punctuationCharacters)
+            let sentence = itemsToSave[index].originalSentence
 
+            guard
+                let url     = Bundle.main.url(forResource: "Secrets", withExtension: "plist"),
+                let dict    = NSDictionary(contentsOf: url) as? [String: Any],
+                let apiKey  = dict["LLM_API_KEY"]  as? String,
+                let baseURL = dict["LLM_BASE_URL"] as? String,
+                let model   = dict["LLM_MODEL"]    as? String,
+                let endpoint = URL(string: baseURL)
+            else {
+                await setFallbackDefinition(for: index)
+                return
+            }
+
+            let prompt = """
+                    The dictionary lookup for the English word "\(word)" failed (not
+                    found, misspelled, informal, or too rare for a standard
+                    dictionary). It appears in this sentence: "\(sentence)"
+
+                    Provide a learner-friendly definition based on how it's used in
+                    that sentence.
+
+                    Reply ONLY with this JSON, no explanation:
+                    {
+                      "valid": true,
+                      "definition": "<clear definition in 1 sentence, matching this context>",
+                      "example": "<a natural example sentence using it>",
+                      "wordType": "<noun | verb | adjective | adverb | etc.>",
+                      "pronunciation": "<IPA or approximate pronunciation, or empty string if unknown>"
+                    }
+                    If "\(word)" is not a real word at all (e.g. OCR garbage), reply:
+                    {"valid": false}
+                    """
+
+            var request = URLRequest(url: endpoint)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json",  forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 12
+
+            let body: [String: Any] = [
+                "model": model,
+                "max_tokens": 220,
+                "temperature": 0,
+                "messages": [["role": "user", "content": prompt]]
+            ]
+
+            guard let httpBody = try? JSONSerialization.data(withJSONObject: body) else {
+                await setFallbackDefinition(for: index)
+                return
+            }
+            request.httpBody = httpBody
+
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                    await setFallbackDefinition(for: index)
+                    return
+                }
+
+                guard
+                    let json    = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                    let choices = json["choices"] as? [[String: Any]],
+                    let message = choices.first?["message"] as? [String: Any],
+                    let text    = message["content"] as? String
+                else {
+                    await setFallbackDefinition(for: index)
+                    return
+                }
+
+                let cleaned = text
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "```json", with: "")
+                    .replacingOccurrences(of: "```", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                guard
+                    let resultData = cleaned.data(using: .utf8),
+                    let result     = try? JSONSerialization.jsonObject(with: resultData) as? [String: Any],
+                    result["valid"] as? Bool == true
+                else {
+                    await setFallbackDefinition(for: index)
+                    return
+                }
+
+                let definition    = result["definition"]    as? String ?? ""
+                let example       = result["example"]       as? String ?? ""
+                let wordType      = result["wordType"]      as? String
+                let pronunciation = result["pronunciation"]  as? String
+
+                guard !definition.isEmpty else {
+                    await setFallbackDefinition(for: index)
+                    return
+                }
+
+                let sense = DictionarySense(
+                    definition: definition,
+                    example: example.isEmpty ? nil : example,
+                    wordType: wordType,
+                    registerLabel: nil,
+                    pronunciationAudioURL: nil,
+                    isBestMatch: true
+                )
+
+                await MainActor.run {
+                    itemsToSave[index].senses            = [sense]
+                    itemsToSave[index].definition         = definition
+                    itemsToSave[index].dictionaryExample  = example.isEmpty ? nil : example
+                    itemsToSave[index].wordType           = wordType
+                    itemsToSave[index].pronunciation      = (pronunciation?.isEmpty == false) ? pronunciation! : "N/A"
+                    print("[LlamaWordFallback] '\(word)': \(definition.prefix(60))")
+                }
+            } catch {
+                print("[LlamaWordFallback] error: \(error)")
+                await setFallbackDefinition(for: index)
+            }
+        }
     private func lookupPhraseWithLlama(for index: Int) async {
         let phrase   = itemsToSave[index].word
         let sentence = itemsToSave[index].originalSentence
@@ -1731,19 +1853,24 @@ for (sense, score) in scored {
                     extractedExample = example
                 }
                 
-                await MainActor.run {
-                    itemsToSave[index].pronunciation = extractedPhonetic.isEmpty ? "N/A" : extractedPhonetic
-                    itemsToSave[index].definition = extractedDefinition.isEmpty ? "Definition not found." : extractedDefinition
-                    itemsToSave[index].dictionaryExample = extractedExample
-                }
-            } else {
-                await setFallbackDefinition(for: index)
-            }
-        } catch {
-            await setFallbackDefinition(for: index)
-        }
-    }
-    
+                if extractedDefinition.isEmpty {
+                                    // Free dictionary returned an entry but no usable definition —
+                                    // fall through to Llama instead of showing "Definition not found."
+                                    await lookupWordWithLlama(for: index)
+                                } else {
+                                    await MainActor.run {
+                                        itemsToSave[index].pronunciation = extractedPhonetic.isEmpty ? "N/A" : extractedPhonetic
+                                        itemsToSave[index].definition = extractedDefinition
+                                        itemsToSave[index].dictionaryExample = extractedExample
+                                    }
+                                }
+                            } else {
+                                await lookupWordWithLlama(for: index)
+                            }
+                        } catch {
+                            await lookupWordWithLlama(for: index)
+                        }
+                    }
     private func setFallbackDefinition(for index: Int) async {
         await MainActor.run {
             itemsToSave[index].definition = "Definition not found."
