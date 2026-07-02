@@ -1107,34 +1107,39 @@ class WordBoxView: UIView {
     }
 
     private func updateAppearance() {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
 
-        if let order = mergeOrder {
-            // Merge mode: blue tint + numbered badge
-            tintLayer.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.25).cgColor
-            badgeLayer.isHidden = false
-            badgeLayer.backgroundColor = UIColor.systemBlue.cgColor
-            badgeTextLayer.string = "\(order)"
-            badgeTextLayer.isHidden = false
-        } else if isSelectedWord {
-            // Selected: teal for phrases, yellow for single words
-            let color = isPhrase ? UIColor.systemTeal : UIColor.systemYellow
-            tintLayer.backgroundColor = color.withAlphaComponent(0.55).cgColor
-            badgeLayer.isHidden = true
-            badgeTextLayer.isHidden = true
-        } else {
-            // Unselected: bright white pill — locally reverses the image dim
-            // under this word, making it look like it has its original white
-            // paper background while everything around it stays slightly dark.
-            // This is exactly what iOS Live Text does.
-            tintLayer.backgroundColor = UIColor.white.withAlphaComponent(0.72).cgColor
-            badgeLayer.isHidden = true
-            badgeTextLayer.isHidden = true
+            // Always sync frame here — guarantees visibility even when called
+            // before layoutSubviews runs (e.g. from mergeOrder's didSet firing
+            // right after init, before the view has been laid out).
+            tintLayer.frame = bounds
+
+            if mergeOrder != nil {
+                // Merge mode: same fill-only style as single selection — no
+                // badge, since the order is already visible in the merge
+                // preview strip next to the Merge Words button.
+                tintLayer.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.4).cgColor
+                badgeLayer.isHidden = true
+                badgeTextLayer.isHidden = true
+            } else if isSelectedWord {
+                // Selected: teal for phrases, yellow for single words
+                let color = isPhrase ? UIColor.systemTeal : UIColor.systemYellow
+                tintLayer.backgroundColor = color.withAlphaComponent(0.55).cgColor
+                badgeLayer.isHidden = true
+                badgeTextLayer.isHidden = true
+            } else {
+                // Unselected: bright white pill — locally reverses the image dim
+                // under this word, making it look like it has its original white
+                // paper background while everything around it stays slightly dark.
+                // This is exactly what iOS Live Text does.
+                tintLayer.backgroundColor = UIColor.white.withAlphaComponent(0.4).cgColor
+                badgeLayer.isHidden = true
+                badgeTextLayer.isHidden = true
+            }
+
+            CATransaction.commit()
         }
-
-        CATransaction.commit()
-    }
 }
 
 // --------------------------------------------------
@@ -2068,10 +2073,15 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
         // pending phrase (with an order badge) instead of selecting them for
         // saving. Confirming combines exactly those words, in tap order.
     private var isMergeModeActive = false
-        private var pendingMergeSelections: [(word: DetectedWord, box: WordBoxView)] = []
-        private var mergeModeButton: UIButton!
-        private var combineButton: UIButton!
-        private var mergePreviewLabel: UILabel!
+            private var pendingMergeSelections: [(word: DetectedWord, box: WordBoxView)] = []
+            private var mergeModeButton: UIButton!
+            private var combineButton: UIButton!
+            private var mergePreviewLabel: UILabel!
+            // Tracks the last displayed image rect so viewDidLayoutSubviews only
+            // rebuilds word boxes on genuine geometry changes (rotation/resize),
+            // not on every layout pass triggered by unrelated UI (e.g. the
+            // Combine button's title changing size).
+            private var lastDisplayedRect: CGRect = .zero
     
     override func viewDidLoad() {
             super.viewDidLoad()
@@ -2129,7 +2139,7 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
                         mergeModeConfig.title = "Merge Words"
                         mergeModeConfig.baseForegroundColor = .white
                         mergeModeConfig.background.backgroundColor = UIColor.black.withAlphaComponent(0.45)
-                        mergeModeConfig.background.cornerRadius = 14
+                        mergeModeConfig.background.cornerRadius = 8
                         mergeModeConfig.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 14, bottom: 6, trailing: 14)
                         mergeModeButton.configuration = mergeModeConfig
                         mergeModeButton.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
@@ -2142,7 +2152,7 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
                         combineConfig.title = "Combine (0)"
                         combineConfig.baseForegroundColor = .white
                         combineConfig.background.backgroundColor = UIColor.systemBlue
-                        combineConfig.background.cornerRadius = 14
+                        combineConfig.background.cornerRadius = 8
                         combineConfig.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 14, bottom: 6, trailing: 14)
                         combineButton.configuration = combineConfig
                         combineButton.titleLabel?.font = .systemFont(ofSize: 13, weight: .semibold)
@@ -2308,27 +2318,32 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
     }
     
     private func setupImageView() {
-        imageView = UIImageView(image: image)
-        imageView.contentMode = .scaleAspectFit
-        imageView.isUserInteractionEnabled = true
-        imageView.frame = scrollView.bounds
-        scrollView.addSubview(imageView)
-        scrollView.contentSize = imageView.bounds.size
+            imageView = UIImageView(image: image)
+            imageView.contentMode = .scaleAspectFit
+            imageView.isUserInteractionEnabled = true
+            imageView.frame = scrollView.bounds
+            scrollView.addSubview(imageView)
+            scrollView.contentSize = imageView.bounds.size
 
-        overlayView = UIView()
-                overlayView.isUserInteractionEnabled = true
-                imageView.addSubview(overlayView)
-                // Swipe-to-merge has been replaced by tap-based Merge Mode (see
-                // toggleMergeMode/handleMergeModeTap) — it was unreliable because
-                // OCR box edges don't always line up precisely with the visible
-                // text, especially on tilted photos.
-        // Subtle dim over the whole image — mimics iOS Live Text's background dimming
-        // which makes the white word pills pop against the darker surroundings.
-        imageDimOverlay = UIView()
-        imageDimOverlay.backgroundColor = UIColor.black.withAlphaComponent(0.15)
-        imageDimOverlay.isUserInteractionEnabled = false
-        imageView.addSubview(imageDimOverlay)
-            }
+            // Z-order (back to front): photo → dim overlay → word tap targets.
+            // The dim MUST be added before overlayView, not after — addSubview
+            // stacks later calls on top, so adding it after word boxes would
+            // wash out every highlight (this was muting merge-mode's blue tint
+            // almost to invisibility, since white selection is bright enough to
+            // fight through the dim but the blue tint isn't).
+            imageDimOverlay = UIView()
+            imageDimOverlay.backgroundColor = UIColor.black.withAlphaComponent(0.15)
+            imageDimOverlay.isUserInteractionEnabled = false
+            imageView.addSubview(imageDimOverlay)
+
+            overlayView = UIView()
+            overlayView.isUserInteractionEnabled = true
+            imageView.addSubview(overlayView)
+            // Swipe-to-merge has been replaced by tap-based Merge Mode (see
+            // toggleMergeMode/handleMergeModeTap) — it was unreliable because
+            // OCR box edges don't always line up precisely with the visible
+            // text, especially on tilted photos.
+        }
     
     private func setupBottomBar() {
         bottomBar = UIView()
@@ -2614,31 +2629,48 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
     }
     
     override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        // Runs after every rotation — recompute scroll/image/overlay frames
-        // so the word boxes remap correctly to the new screen dimensions.
-        scrollView.frame = view.bounds
+            super.viewDidLayoutSubviews()
+            // Runs after every rotation — recompute scroll/image/overlay frames
+            // so the word boxes remap correctly to the new screen dimensions.
+            scrollView.frame = view.bounds
 
-        if scrollView.zoomScale == 1.0 {
-            imageView.frame = scrollView.bounds
-            scrollView.contentSize = imageView.bounds.size
-        }
+            if scrollView.zoomScale == 1.0 {
+                imageView.frame = scrollView.bounds
+                scrollView.contentSize = imageView.bounds.size
+            }
 
-        let displayedRect = AVMakeRect(aspectRatio: image.size, insideRect: imageView.bounds)
-        overlayView.frame = displayedRect
+            let displayedRect = AVMakeRect(aspectRatio: image.size, insideRect: imageView.bounds)
+            overlayView.frame = displayedRect
 
-        // Redraw all word boxes at the new scale — the normalized boundingBox
-        // coordinates are orientation-independent so no OCR re-run is needed.
-        if !allDetectedWords.isEmpty {
+            // viewDidLayoutSubviews fires on ANY layout pass, including ones
+            // caused by unrelated UI changes (e.g. the Combine button's title
+            // changing after a merge-mode tap). Only rebuild the word boxes when
+            // the actual displayed image geometry changed — otherwise we tear
+            // down and recreate every WordBoxView an instant after tapping it,
+            // which is what caused merge-mode highlights to flicker and vanish.
+            guard displayedRect != lastDisplayedRect, !allDetectedWords.isEmpty else { return }
+            lastDisplayedRect = displayedRect
+
+            imageDimOverlay.frame = displayedRect
+
+            // Redraw all word boxes at the new scale — the normalized boundingBox
+            // coordinates are orientation-independent so no OCR re-run is needed.
             drawWordBoxes(allDetectedWords)
-            // Restore selection state after redraw
+
+            // Restore selection AND merge state after redraw. pendingMergeSelections
+            // holds references to the old (now-detached) WordBoxView instances, so
+            // those must be repointed at the freshly created boxes or future taps
+            // (deselect, resetMergeMode) will silently miss them.
             for case let box as WordBoxView in overlayView.subviews {
                 if selectedWords.contains(where: { $0.id == box.detectedWord.id }) {
                     box.isSelectedWord = true
                 }
+                if let idx = pendingMergeSelections.firstIndex(where: { $0.word.id == box.detectedWord.id }) {
+                    box.mergeOrder = idx + 1
+                    pendingMergeSelections[idx].box = box
+                }
             }
         }
-    }
 }
 
 // --------------------------------------------------
