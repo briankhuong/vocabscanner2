@@ -16,18 +16,43 @@ import NaturalLanguage
 import UIKit
 import UniformTypeIdentifiers
 
+// Required for camera rotation — UIViewController-level overrides are
+// ignored when presented via SwiftUI fullScreenCover because the hosting
+// controller controls orientation at the app delegate level.
+class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        supportedInterfaceOrientationsFor window: UIWindow?
+    ) -> UIInterfaceOrientationMask {
+        return .all
+    }
+}
+// Cancels the inner task and throws if it doesn't complete within `seconds`.
+func withTimeout<T: Sendable>(seconds: Double, operation: @escaping @Sendable () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await operation() }
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            throw CancellationError()
+        }
+        let result = try await group.next()!
+        group.cancelAll()
+        return result
+    }
+}
 // --------------------------------------------------
 // MARK: - App Entry
 // --------------------------------------------------
 @main
 struct VocabScannerApp: App {
-    @Environment(\.scenePhase) private var scenePhase  // ← this was missing
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate  // ← add this
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             ContentView()
         }
-        .modelContainer(for: [Book.self, VocabCard.self, ActivityLog.self])  // ← removed duplicate
+        .modelContainer(for: [Book.self, VocabCard.self, ActivityLog.self])
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 APIWarmup.shared.warmUpAll()
@@ -35,7 +60,6 @@ struct VocabScannerApp: App {
         }
     }
 }
-
 // --------------------------------------------------
 // MARK: - SwiftData Models
 // --------------------------------------------------
@@ -973,21 +997,38 @@ struct CameraPreview: UIViewRepresentable {
     }
     func updateUIView(_ uiView: PreviewView, context: Context) {
         uiView.previewLayer.session = session
+        // Trigger layoutSubviews so orientation updates on every SwiftUI pass
+        uiView.setNeedsLayout()
     }
 }
 
 final class PreviewView: UIView {
     let previewLayer = AVCaptureVideoPreviewLayer()
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         layer.addSublayer(previewLayer)
     }
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
+    required init?(coder: NSCoder) { fatalError() }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         previewLayer.frame = bounds
+        // Update video orientation to match current interface orientation
+        // so the preview fills the screen correctly in landscape.
+        if let connection = previewLayer.connection, connection.isVideoRotationAngleSupported(0) {
+            let orientation = window?.windowScene?.effectiveGeometry.interfaceOrientation ?? .portrait
+            let angle: CGFloat
+            switch orientation {
+            case .landscapeLeft:           angle = 180
+            case .landscapeRight:          angle = 0
+            case .portraitUpsideDown:      angle = 270
+            default:                       angle = 90  // portrait
+            }
+            if connection.isVideoRotationAngleSupported(angle) {
+                connection.videoRotationAngle = angle
+            }
+        }
     }
 }
 
@@ -1012,82 +1053,89 @@ struct WordSelectionView: UIViewControllerRepresentable {
 
 class WordBoxView: UIView {
     let detectedWord: DetectedWord
-    var isSelectedWord: Bool = false {
-        didSet { updateAppearance() }
-    }
-    var isPhrase: Bool = false {
-        didSet { updateAppearance() }
-    }
-    /// Non-nil while this word is a pending pick in Merge Mode. The value
-    /// is its position in the phrase being built (1, 2, 3...).
-    var mergeOrder: Int? {
-        didSet { updateAppearance() }
-    }
-    
+
+    var isSelectedWord: Bool = false { didSet { updateAppearance() } }
+    var isPhrase: Bool = false      { didSet { updateAppearance() } }
+    var mergeOrder: Int?            { didSet { updateAppearance() } }
+
+    // All sublayers created once — never added or removed after init.
+    // This prevents the EXC_BAD_ACCESS from add/remove racing with didSet.
+    private let tintLayer      = CALayer()
+    private let badgeLayer     = CALayer()
+    private let badgeTextLayer = CATextLayer()
+
     init(detectedWord: DetectedWord, frame: CGRect) {
         self.detectedWord = detectedWord
         super.init(frame: frame)
-        layer.borderWidth = 1
-        layer.cornerRadius = 2
+        layer.cornerRadius = 3
+        layer.masksToBounds = true
+
+        layer.addSublayer(tintLayer)
+
+        badgeLayer.cornerRadius = 7
+        badgeLayer.isHidden = true
+        layer.addSublayer(badgeLayer)
+
+        badgeTextLayer.fontSize = 8
+        badgeTextLayer.alignmentMode = .center
+        badgeTextLayer.foregroundColor = UIColor.white.cgColor
+        badgeTextLayer.isHidden = true
+        layer.addSublayer(badgeTextLayer)
+
         updateAppearance()
     }
-    
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    
-    // In WordBoxView, replace the current border/background approach:
-    // In WordBoxView, replace the current border/background approach:
-    // In WordBoxView, replace the current border/background approach:
-        private func updateAppearance() {
-                backgroundColor = .clear
-                layer.borderWidth = 0
-                layer.sublayers?.forEach { $0.removeFromSuperlayer() }
 
-                let underline = CALayer()
-                // Sit right at the box's own bottom edge — the previous +1/+2
-                // offset is what made it feel "too far away" on boxes whose OCR
-                // frame already has built-in padding. Zero offset is the most
-                // consistent baseline across different box shapes.
-                underline.frame = CGRect(x: 0, y: bounds.height - 1, width: bounds.width, height: isSelectedWord ? 2.5 : 1)
+    required init?(coder: NSCoder) { fatalError() }
 
-                if isSelectedWord {
-                    // Only the SELECTED state carries color meaning now — teal
-                    // for a phrase, yellow for a single word. Unselected boxes
-                    // are always the same faint white regardless of type, so
-                    // "faint teal" can no longer be mistaken for "selected."
-                    underline.backgroundColor = (isPhrase ? UIColor.systemTeal : UIColor.systemYellow).cgColor
-                } else {
-                    underline.backgroundColor = UIColor.white.withAlphaComponent(0.25).cgColor
-                }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Update layer frames whenever the view resizes (rotation, zoom, etc.)
+        tintLayer.frame = bounds
 
-                layer.addSublayer(underline)
+        let badgeSize: CGFloat = 14
+        badgeLayer.frame = CGRect(x: -4, y: -4, width: badgeSize, height: badgeSize)
+        badgeLayer.cornerRadius = badgeSize / 2
 
-                // Merge-mode badge: small numbered circle + light blue tint,
-                // shown only while this word is a pending pick for a phrase
-                // being built. This is visually distinct from normal selection.
-                guard let order = mergeOrder else { return }
+        let textHeight: CGFloat = 9
+        badgeTextLayer.frame = CGRect(
+            x: badgeLayer.frame.minX,
+            y: badgeLayer.frame.minY + (badgeSize - textHeight) / 2,
+            width: badgeSize,
+            height: textHeight
+        )
+        badgeTextLayer.contentsScale = window?.screen.scale ?? 2.0
+    }
 
-                backgroundColor = UIColor.systemBlue.withAlphaComponent(0.15)
+    private func updateAppearance() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
 
-            let badgeSize: CGFloat = 13
-                        let badge = CALayer()
-                        badge.frame = CGRect(x: -4, y: -4, width: badgeSize, height: badgeSize)
-                        badge.backgroundColor = UIColor.systemBlue.cgColor
-                        badge.cornerRadius = badgeSize / 2
-                        layer.addSublayer(badge)
-
-                        let badgeLabel = CATextLayer()
-                        badgeLabel.string = "\(order)"
-                        badgeLabel.fontSize = 8
-                        badgeLabel.alignmentMode = .center
-                        // Vertically center the text within the small badge circle —
-                        // CATextLayer doesn't auto-center vertically like UILabel does.
-                        let textHeight: CGFloat = 9
-                        badgeLabel.frame = CGRect(x: badge.frame.minX, y: badge.frame.minY + (badgeSize - textHeight) / 2, width: badgeSize, height: textHeight)
-                        badgeLabel.foregroundColor = UIColor.white.cgColor
-                        badgeLabel.contentsScale = window?.screen.scale ?? traitCollection.displayScale
-                        layer.addSublayer(badgeLabel)
-            }
+        if let order = mergeOrder {
+            // Merge mode: blue tint + numbered badge
+            tintLayer.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.25).cgColor
+            badgeLayer.isHidden = false
+            badgeLayer.backgroundColor = UIColor.systemBlue.cgColor
+            badgeTextLayer.string = "\(order)"
+            badgeTextLayer.isHidden = false
+        } else if isSelectedWord {
+            // Selected: teal for phrases, yellow for single words
+            let color = isPhrase ? UIColor.systemTeal : UIColor.systemYellow
+            tintLayer.backgroundColor = color.withAlphaComponent(0.55).cgColor
+            badgeLayer.isHidden = true
+            badgeTextLayer.isHidden = true
+        } else {
+            // Unselected: bright white pill — locally reverses the image dim
+            // under this word, making it look like it has its original white
+            // paper background while everything around it stays slightly dark.
+            // This is exactly what iOS Live Text does.
+            tintLayer.backgroundColor = UIColor.white.withAlphaComponent(0.72).cgColor
+            badgeLayer.isHidden = true
+            badgeTextLayer.isHidden = true
         }
+
+        CATransaction.commit()
+    }
+}
 
 // --------------------------------------------------
 // MARK: - SaveToCollectionView
@@ -1170,71 +1218,89 @@ struct SaveToCollectionView: View {
     }
     
     private func lookupDefinitionsAndPronunciations() async {
-        for i in itemsToSave.indices {
-            let word = itemsToSave[i].word.trimmingCharacters(in: .punctuationCharacters)
-
-            // Phrases go straight to Llama — MW rarely has idioms/phrasal verbs
-            if word.contains(" ") {
-                await lookupPhraseWithLlama(for: i)
-                continue
-            }
-
-            // Try Merriam‑Webster first
-            do {
-                if let mwResult = try await MerriamWebster.lookup(word: word),
-                   !mwResult.senses.isEmpty {
-
-                    // Clear any stale isBestMatch flags before reordering
-                    var senses = mwResult.senses
-                    for j in senses.indices { senses[j].isBestMatch = false }
-
-                    // Primary path: ask LLM to pick the best sense using sentence context
-                    if let wsdResult = await LLMWSD.selectBestSense(
-                        word: word,
-                        sentence: itemsToSave[i].originalSentence,
-                        senses: senses
-                    ) {
-                        // Pull the winner out, flag it, reinsert at front
-                        var best = senses.remove(at: wsdResult.bestIndex)
-                        best.isBestMatch = wsdResult.confidence >= 0.75
-                        senses.insert(best, at: 0)
-                    } else {
-                        // Offline fallback: use local heuristic ranking
-                        print("[LLMWSD] Unavailable, falling back to local ranking")
-                        senses = rankSenses(senses,
-                                            contextSentence: itemsToSave[i].originalSentence,
-                                            word: word,
-                                            mode: dictionaryMode)
-                    }
-
-                    await MainActor.run {
-                        itemsToSave[i].senses = senses
-
-                        if let bestSense = senses.first {
-                            itemsToSave[i].definition = bestSense.definition
-                            itemsToSave[i].dictionaryExample = bestSense.example
-                            itemsToSave[i].wordType = bestSense.wordType
-                            itemsToSave[i].registerLabel = bestSense.registerLabel
-                            itemsToSave[i].pronunciationAudioURL = bestSense.pronunciationAudioURL
-                        }
-
-                        if let pron = mwResult.pronunciation {
-                            itemsToSave[i].pronunciation = pron
-                        } else {
-                            itemsToSave[i].pronunciation = "N/A"
-                        }
-                        itemsToSave[i].origin = mwResult.origin
-
-                        print("[MW Debug] Successfully resolved \(senses.count) senses.")
-                    }
-                    continue
+        // Fire all word lookups concurrently — each word updates its own row
+        // as soon as its result arrives, rather than waiting for all to finish.
+        await withTaskGroup(of: Void.self) { group in
+            for i in itemsToSave.indices {
+                group.addTask {
+                    await self.lookupSingleWord(at: i)
                 }
-            } catch {
-                print("Merriam‑Webster error: \(error)")
             }
-            
-            // Fallback to free Dictionary API
-            await lookupFreeDictionary(for: i)
+        }
+    }
+
+    private func lookupSingleWord(at i: Int) async {
+        let word = itemsToSave[i].word.trimmingCharacters(in: .punctuationCharacters)
+
+        // Multi-word phrases → Llama directly
+        if word.contains(" ") {
+            await lookupPhraseWithLlama(for: i)
+            return
+        }
+
+        // ── Merriam-Webster (8s timeout) ──────────────────────────────────────
+        do {
+            let mwResult = try await withTimeout(seconds: 8) {
+                try await MerriamWebster.lookup(word: word)
+            }
+
+            if let mwResult, !mwResult.senses.isEmpty {
+                var senses = mwResult.senses
+                for j in senses.indices { senses[j].isBestMatch = false }
+
+                // Take an immutable snapshot before crossing the async boundary —
+                // Swift 6 forbids capturing a var across concurrent closures.
+                let sensesSnapshot = senses
+
+                // ── Llama WSD (6s timeout) ────────────────────────────────────
+                let wsdResult = await (try? withTimeout(seconds: 6) {
+                    await LLMWSD.selectBestSense(
+                        word: word,
+                        sentence: self.itemsToSave[i].originalSentence,
+                        senses: sensesSnapshot
+                    )
+                }) ?? nil
+
+                if let wsdResult {
+                    var best = senses.remove(at: wsdResult.bestIndex)
+                    best.isBestMatch = wsdResult.confidence >= 0.75
+                    senses.insert(best, at: 0)
+                } else {
+                    print("[LLMWSD] Timed out or unavailable, using local ranking")
+                    senses = rankSenses(
+                        senses,
+                        contextSentence: itemsToSave[i].originalSentence,
+                        word: word,
+                        mode: dictionaryMode
+                    )
+                }
+
+                await MainActor.run {
+                    itemsToSave[i].senses = senses
+                    if let best = senses.first {
+                        itemsToSave[i].definition            = best.definition
+                        itemsToSave[i].dictionaryExample     = best.example
+                        itemsToSave[i].wordType              = best.wordType
+                        itemsToSave[i].registerLabel         = best.registerLabel
+                        itemsToSave[i].pronunciationAudioURL = best.pronunciationAudioURL
+                    }
+                    itemsToSave[i].pronunciation = mwResult.pronunciation ?? "N/A"
+                    itemsToSave[i].origin        = mwResult.origin
+                }
+                return
+            }
+        } catch {
+            print("[MW] Error or timeout for '\(word)': \(error)")
+        }
+
+        // ── Free dictionary fallback (6s timeout) ─────────────────────────────
+        do {
+            try await withTimeout(seconds: 6) {
+                await self.lookupFreeDictionary(for: i)
+            }
+        } catch {
+            await setFallbackDefinition(for: i)
+            print("[FreeDictionary] Timeout for '\(word)'")
         }
     }
     private func rankSenses(_ senses: [DictionarySense], contextSentence: String, word: String, mode: String) -> [DictionarySense] {
@@ -1840,9 +1906,14 @@ struct VocabItemRowView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }.padding(.leading, 4)
             } else {
-                Text("Searching dictionary definition...").font(.caption).foregroundColor(.secondary)
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                    Text("Looking up definition…")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
-            
             // 4. Context Sentence & Translation
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.originalSentence)
@@ -1979,6 +2050,7 @@ struct PendingVocabItem: Identifiable {
 // MARK: - Word Selection View Controller
 // --------------------------------------------------
 class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
+    private var imageDimOverlay: UIView!
     var image: UIImage!
     var onDismiss: (() -> Void)?
     var onProcess: (([DetectedWord]) -> Void)?
@@ -2011,6 +2083,13 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
             setupHintLabel()
             setupMergeControls()
         }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        return .all   // allow portrait + both landscapes
+    }
+
+    override var shouldAutorotate: Bool {
+        return true
+    }
     private func setupHintLabel() {
             let hint = UILabel()
             hint.text = "Tap to select · Use Merge Words to combine · Long-press phrase to split"
@@ -2243,6 +2322,12 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
                 // toggleMergeMode/handleMergeModeTap) — it was unreliable because
                 // OCR box edges don't always line up precisely with the visible
                 // text, especially on tilted photos.
+        // Subtle dim over the whole image — mimics iOS Live Text's background dimming
+        // which makes the white word pills pop against the darker surroundings.
+        imageDimOverlay = UIView()
+        imageDimOverlay.backgroundColor = UIColor.black.withAlphaComponent(0.15)
+        imageDimOverlay.isUserInteractionEnabled = false
+        imageView.addSubview(imageDimOverlay)
             }
     
     private func setupBottomBar() {
@@ -2329,6 +2414,7 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
         overlayView.subviews.forEach { $0.removeFromSuperview() }
         let displayedRect = AVMakeRect(aspectRatio: image.size, insideRect: imageView.bounds)
         overlayView.frame = displayedRect
+        imageDimOverlay.frame = displayedRect
         
         for word in words {
             let box = word.boundingBox
@@ -2529,12 +2615,28 @@ class WordSelectionViewController: UIViewController, UIScrollViewDelegate {
     
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        // Runs after every rotation — recompute scroll/image/overlay frames
+        // so the word boxes remap correctly to the new screen dimensions.
+        scrollView.frame = view.bounds
+
         if scrollView.zoomScale == 1.0 {
-            scrollView.frame = view.bounds
             imageView.frame = scrollView.bounds
             scrollView.contentSize = imageView.bounds.size
-            let displayedRect = AVMakeRect(aspectRatio: image.size, insideRect: imageView.bounds)
-            overlayView.frame = displayedRect
+        }
+
+        let displayedRect = AVMakeRect(aspectRatio: image.size, insideRect: imageView.bounds)
+        overlayView.frame = displayedRect
+
+        // Redraw all word boxes at the new scale — the normalized boundingBox
+        // coordinates are orientation-independent so no OCR re-run is needed.
+        if !allDetectedWords.isEmpty {
+            drawWordBoxes(allDetectedWords)
+            // Restore selection state after redraw
+            for case let box as WordBoxView in overlayView.subviews {
+                if selectedWords.contains(where: { $0.id == box.detectedWord.id }) {
+                    box.isSelectedWord = true
+                }
+            }
         }
     }
 }
@@ -2571,6 +2673,31 @@ final class WordDetector {
                 if abs($0.box.minY - $1.box.minY) > 0.005 { return $0.box.minY > $1.box.minY }
                 return $0.box.minX < $1.box.minX
             }
+            // ── Step 1b: merge words hyphenated across lines ──────────────────────────
+            // Vision gives each line as a separate observation. When a word is broken
+            // with a hyphen at a line end ("self-" / "aware"), stitch the two fragments
+            // into one DetectedWord so MW lookup gets the real word.
+            var mergedObsLines: [(candidate: VNRecognizedText, text: String, box: CGRect)] = []
+            var skipNext = false
+            for i in 0..<obsLines.count {
+                if skipNext { skipNext = false; continue }
+                let current = obsLines[i]
+                // Check if this line ends with a hyphen AND there is a next line
+                if current.text.hasSuffix("-"), i + 1 < obsLines.count {
+                    let next = obsLines[i + 1]
+                    // Strip the trailing hyphen and join
+                    let joined = String(current.text.dropLast()) + next.text
+                    // Union the two bounding boxes
+                    let unionBox = current.box.union(next.box)
+                    // We lose per-word Vision boxes for the joined word, but that's
+                    // acceptable — it will be treated as a single token below.
+                    mergedObsLines.append((current.candidate, joined, unionBox))
+                    skipNext = true
+                } else {
+                    mergedObsLines.append(current)
+                }
+            }
+            obsLines = mergedObsLines   // reassign in place — var was declared above
 
             // ── Step 2: build full text & sentence map (unchanged logic) ──────────────
             var fullTextBuilder = ""
@@ -2626,29 +2753,36 @@ final class WordDetector {
                 let contextSentence = sentences.indices.contains(sentenceIndex)
                     ? sentences[sentenceIndex] : item.text
 
-                // Tokenize the candidate string into word-level ranges
-                let wordTokenizer = NLTokenizer(unit: .word)
-                wordTokenizer.string = item.candidate.string
+                // Split on whitespace only — NOT NLTokenizer which splits on hyphens,
+                // causing "well-known" → ["well", "known"] and making both unsearchable.
+                let rawTokens = item.candidate.string
+                    .components(separatedBy: .whitespaces)
+                    .filter { !$0.trimmingCharacters(in: .punctuationCharacters).isEmpty }
 
-                wordTokenizer.enumerateTokens(
-                    in: item.candidate.string.startIndex..<item.candidate.string.endIndex
-                ) { tokenRange, _ in
-                    let wordText = String(item.candidate.string[tokenRange])
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !wordText.isEmpty else { return true }
+                // Track character position so we can call boundingBox(for:) with the
+                // correct range of each token inside the candidate string.
+                var searchStart = item.candidate.string.startIndex
 
-                    // ← THE KEY CALL: Vision gives us the tight ink-level box for
-                    //   this exact substring, same data the Photos app uses.
+                for token in rawTokens {
+                    // Find this token's range in the candidate string
+                    guard let tokenRange = item.candidate.string.range(
+                        of: token,
+                        range: searchStart..<item.candidate.string.endIndex
+                    ) else { continue }
+                    searchStart = tokenRange.upperBound
+
+                    let wordText = token.trimmingCharacters(in: .punctuationCharacters)
+                    guard !wordText.isEmpty else { continue }
+
                     if let wordRect = try? item.candidate.boundingBox(for: tokenRange) {
                         results.append(DetectedWord(
                             text: wordText,
-                            boundingBox: wordRect.boundingBox,   // normalized CGRect
+                            boundingBox: wordRect.boundingBox,
                             contextSentence: contextSentence,
                             isPhrase: false,
                             phraseComponents: nil
                         ))
                     }
-                    return true
                 }
             }
 
@@ -2663,7 +2797,11 @@ final class WordDetector {
         }
 
         request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = false
+        request.usesLanguageCorrection = true   // better handling of curly quotes
+                                                 // and stylized/decorated text
+        request.minimumTextHeight = 0.01        // don't skip small or decorated lines
+        // Explicitly set language so Vision doesn't waste time on other scripts
+        request.recognitionLanguages = ["en-US"]
 
         let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
         DispatchQueue.global(qos: .userInitiated).async { try? handler.perform([request]) }
