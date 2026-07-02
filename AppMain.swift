@@ -772,6 +772,18 @@ final class CameraModel: NSObject, ObservableObject {
     private let output = AVCapturePhotoOutput()
     private let sessionQueue = DispatchQueue(label: "camera.session")
     private var isConfigured = false
+
+    // Same mapping PreviewView uses for its preview layer connection, so the
+    // photo output connection can be kept in sync with the actual interface
+    // orientation at the moment of capture.
+    private static func videoRotationAngle(for orientation: UIInterfaceOrientation) -> CGFloat {
+        switch orientation {
+        case .landscapeLeft:           return 180
+        case .landscapeRight:          return 0
+        case .portraitUpsideDown:      return 270
+        default:                       return 90  // portrait
+        }
+    }
     
     func startCamera() {
         let status = AVCaptureDevice.authorizationStatus(for: .video)
@@ -838,9 +850,28 @@ final class CameraModel: NSObject, ObservableObject {
     }
     
     func capturePhoto() {
-        let settings = AVCapturePhotoSettings()
-        output.capturePhoto(with: settings, delegate: self)
-    }
+            // The photo output has its own AVCaptureConnection, separate from the
+            // preview layer's. Only the preview layer's connection was being kept
+            // in sync with device rotation (in PreviewView.layoutSubviews), so the
+            // captured photo's orientation metadata was always based on whatever
+            // angle the output connection happened to default to — not the actual
+            // orientation at the moment of capture. Sync it here, on the main
+            // thread, right before firing the capture.
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                if let connection = self.output.connection(with: .video) {
+                    let orientation = UIApplication.shared.connectedScenes
+                        .compactMap { $0 as? UIWindowScene }
+                        .first?.effectiveGeometry.interfaceOrientation ?? .portrait
+                    let angle = Self.videoRotationAngle(for: orientation)
+                    if connection.isVideoRotationAngleSupported(angle) {
+                        connection.videoRotationAngle = angle
+                    }
+                }
+                let settings = AVCapturePhotoSettings()
+                self.output.capturePhoto(with: settings, delegate: self)
+            }
+        }
 }
 
 extension CameraModel: AVCapturePhotoCaptureDelegate {
